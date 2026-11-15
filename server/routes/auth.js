@@ -14,6 +14,19 @@ const { wrap, str, HttpError, bad } = require('../util');
 
 const r = express.Router();
 
+const getOrigin = (req) => {
+  if (process.env.ORIGIN) return process.env.ORIGIN;
+  const proto = req.headers['x-forwarded-proto'] || (req.secure ? 'https' : 'http');
+  const host = req.headers['x-forwarded-host'] || req.headers.host;
+  return host ? `${proto}://${host}` : cfg.ORIGIN;
+};
+
+const getRPID = (req) => {
+  if (process.env.RP_ID) return process.env.RP_ID;
+  const host = req.headers['x-forwarded-host'] || req.headers.host;
+  return host ? host.split(':')[0] : cfg.RP_ID;
+};
+
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, limit: 20, standardHeaders: true, legacyHeaders: false,
   message: { error: 'Too many attempts. Please wait a few minutes and try again.' },

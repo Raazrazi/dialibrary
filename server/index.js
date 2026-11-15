@@ -15,7 +15,9 @@ const { HttpError } = require('./util');
 
 const app = express();
 app.disable('x-powered-by');
-if (process.env.TRUST_PROXY) app.set('trust proxy', Number(process.env.TRUST_PROXY) || process.env.TRUST_PROXY);
+if (process.env.TRUST_PROXY || cfg.IS_VERCEL) {
+  app.set('trust proxy', Number(process.env.TRUST_PROXY) || 1);
+}
 
 app.use(helmet({
   contentSecurityPolicy: {
@@ -79,6 +81,17 @@ app.use((err, req, res, next) => { // eslint-disable-line no-unused-vars
 async function bootstrap() {
   await initIndexes();
   await settings.load();
+
+  try {
+    const bookCount = sql.prepare('SELECT COUNT(*) c FROM biblio').get()?.c || 0;
+    if (bookCount === 0) {
+      const { seed } = require('./seed');
+      await seed({ force: true, quiet: true });
+    }
+  } catch (e) {
+    console.error('Auto-seed error:', e);
+  }
+
   if (!(await nosql.users.countAsync({}))) {
     const pw = crypto.randomBytes(9).toString('base64url') + '7';
     await nosql.users.insertAsync({
@@ -88,7 +101,9 @@ async function bootstrap() {
     console.log('\n  First start: admin account created.\n  username: admin\n  password: ' + pw + '\n  (shown once, you will be asked to change it)\n');
   }
   await circ.sweepHolds();
-  setInterval(() => circ.sweepHolds().catch(console.error), 10 * 60 * 1000).unref();
+  if (!cfg.IS_VERCEL) {
+    setInterval(() => circ.sweepHolds().catch(console.error), 10 * 60 * 1000).unref();
+  }
 }
 
 if (require.main === module) {

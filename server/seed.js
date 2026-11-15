@@ -7,13 +7,6 @@ const fs = require('fs');
 const path = require('path');
 const cfg = require('./config');
 
-const existing = fs.readdirSync(cfg.DATA_DIR).filter((f) => /\.(db|sqlite)/.test(f));
-if (existing.length && !process.argv.includes('--force')) {
-  console.error('Data already exists in ' + cfg.DATA_DIR + '.\nRun "npm run seed -- --force" to wipe it and load demo data.');
-  process.exit(1);
-}
-existing.forEach((f) => fs.rmSync(path.join(cfg.DATA_DIR, f), { force: true }));
-
 const { sql, nosql, initIndexes } = require('./db');
 const settings = require('./settings');
 const A = require('./auth');
@@ -75,9 +68,25 @@ const BOOKS = [
   ['Kerala: A Cultural History', 'A. Sreedhara Menon', 1967, 'DC Books', 'English', 'History|Kerala|Culture', '954.83 MEN', 2, 'A survey of Kerala from early trade to modern society.'],
 ];
 
-(async () => {
-  await initIndexes(); await settings.load();
-  const staffNames = ['admin', 'librarian'];
+async function seed(options = {}) {
+  const { force = false, quiet = false } = options;
+  await initIndexes();
+  await settings.load();
+
+  // If force is requested and files exist, clean them
+  if (force) {
+    try {
+      sql.exec('DELETE FROM loans; DELETE FROM items; DELETE FROM biblio;');
+      await nosql.users.removeAsync({}, { multi: true });
+      await nosql.holds.removeAsync({}, { multi: true });
+      await nosql.fines.removeAsync({}, { multi: true });
+      await nosql.sessions.removeAsync({}, { multi: true });
+      await nosql.challenges.removeAsync({}, { multi: true });
+    } catch (e) {
+      // Ignore if table doesn't exist yet
+    }
+  }
+
   const mk = async (o) => nosql.users.insertAsync({
     passHash: await A.hashPassword(DEMO_PASSWORD), mustChangePassword: false, active: true, passkeys: [],
     createdAt: new Date().toISOString(), ...o,
@@ -144,7 +153,20 @@ const BOOKS = [
   };
   await hold(students[3], 'Hands-On Machine Learning'); await hold(students[9], 'Hands-On Machine Learning');
 
-  console.log(`Seeded ${BOOKS.length} titles, ${bc} copies, ${students.length} students.`);
-  console.log(`Demo logins (password ${DEMO_PASSWORD}):\n  admin / librarian / student (card S20260001)`);
-  process.exit(0);
-})();
+  if (!quiet) {
+    console.log(`Seeded ${BOOKS.length} titles, ${bc} copies, ${students.length} students.`);
+    console.log(`Demo logins (password ${DEMO_PASSWORD}):\n  admin / librarian / student (card S20260001)`);
+  }
+}
+
+if (require.main === module) {
+  const existing = fs.readdirSync(cfg.DATA_DIR).filter((f) => /\.(db|sqlite)/.test(f));
+  if (existing.length && !process.argv.includes('--force')) {
+    console.error('Data already exists in ' + cfg.DATA_DIR + '.\nRun "npm run seed -- --force" to wipe it and load demo data.');
+    process.exit(1);
+  }
+  existing.forEach((f) => fs.rmSync(path.join(cfg.DATA_DIR, f), { force: true }));
+  seed({ force: true }).then(() => process.exit(0)).catch((e) => { console.error(e); process.exit(1); });
+} else {
+  module.exports = { seed, DEMO_PASSWORD };
+}
