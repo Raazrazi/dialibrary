@@ -113,7 +113,7 @@ r.get('/passkeys', A.requireAuth, (req, res) => {
 r.post('/passkey/register/options', A.requireAuth, authLimiter, wrap(async (req, res) => {
   const u = req.user;
   const options = await generateRegistrationOptions({
-    rpName: settings.get().libraryName, rpID: cfg.RP_ID,
+    rpName: settings.get().libraryName, rpID: getRPID(req),
     userName: u.username, userDisplayName: u.name,
     userID: new TextEncoder().encode(u._id),
     attestationType: 'none',
@@ -131,7 +131,7 @@ r.post('/passkey/register/verify', A.requireAuth, wrap(async (req, res) => {
   try {
     v = await verifyRegistrationResponse({
       response: req.body.response, expectedChallenge: c.challenge,
-      expectedOrigin: cfg.ORIGIN, expectedRPID: cfg.RP_ID, requireUserVerification: true,
+      expectedOrigin: getOrigin(req), expectedRPID: getRPID(req), requireUserVerification: true,
     });
   } catch (e) { throw bad('Could not verify this passkey: ' + e.message); }
   if (!v.verified) throw bad('Passkey could not be verified');
@@ -162,7 +162,7 @@ r.post('/passkey/login/options', authLimiter, wrap(async (req, res) => {
     const u = await nosql.users.findOneAsync({ username });
     if (u && (u.passkeys || []).length) allow = u.passkeys.map((p) => ({ id: p.id, transports: p.transports }));
   }
-  const options = await generateAuthenticationOptions({ rpID: cfg.RP_ID, userVerification: 'required', allowCredentials: allow });
+  const options = await generateAuthenticationOptions({ rpID: getRPID(req), userVerification: 'required', allowCredentials: allow });
   const challengeId = await saveChallenge(options.challenge, { type: 'auth' });
   res.json({ options, challengeId });
 }));
@@ -179,7 +179,7 @@ r.post('/passkey/login/verify', authLimiter, wrap(async (req, res) => {
   try {
     v = await verifyAuthenticationResponse({
       response: req.body.response, expectedChallenge: c.challenge,
-      expectedOrigin: cfg.ORIGIN, expectedRPID: cfg.RP_ID, requireUserVerification: true,
+      expectedOrigin: getOrigin(req), expectedRPID: getRPID(req), requireUserVerification: true,
       credential: { id: pk.id, publicKey: Buffer.from(pk.publicKey, 'base64url'), counter: pk.counter, transports: pk.transports },
     });
   } catch (e) { await A.audit(req, 'login.passkey.fail', {}, user); throw fail; }
