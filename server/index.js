@@ -15,7 +15,7 @@ const { HttpError } = require('./util');
 
 const app = express();
 app.disable('x-powered-by');
-if (process.env.TRUST_PROXY || cfg.IS_VERCEL) {
+if (process.env.TRUST_PROXY || cfg.IS_VERCEL || cfg.IS_RENDER || cfg.PROD) {
   app.set('trust proxy', Number(process.env.TRUST_PROXY) || 1);
 }
 
@@ -107,6 +107,6 @@ async function bootstrap() {
 }
 
 if (require.main === module) {
-  bootstrap().then(() => app.listen(cfg.PORT, () => console.log(`  ${settings.get().libraryName} is open at ${cfg.ORIGIN}`)));
+  bootstrap().then(() => app.listen(cfg.PORT, '0.0.0.0', () => console.log(`  ${settings.get().libraryName} is open on port ${cfg.PORT}`)));
 }
 module.exports = { app, bootstrap };

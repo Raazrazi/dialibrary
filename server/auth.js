@@ -37,7 +37,7 @@ function checkPasswordPolicy(pw, username = '') {
 }
 
 /* ---------- sessions ---------- */
-const COOKIE = cfg.PROD ? '__Host-sid' : 'sid';
+const COOKIE = 'sid';
 
 async function createSession(req, res, user) {
   const token = rand(32);
@@ -50,7 +50,7 @@ async function createSession(req, res, user) {
   };
   await nosql.sessions.insertAsync(doc);
   res.cookie(COOKIE, token, {
-    httpOnly: true, sameSite: 'strict', secure: cfg.PROD, path: '/', maxAge: cfg.SESSION_ABSOLUTE_MS,
+    httpOnly: true, sameSite: 'lax', secure: cfg.PROD, path: '/', maxAge: cfg.SESSION_ABSOLUTE_MS,
   });
   return doc;
 }
@@ -84,11 +84,25 @@ const requireRole = (...roles) => (req, res, next) => {
   next();
 };
 
-// CSRF: SameSite=Strict cookie + same-origin check + JSON-only bodies + per-session token header.
+// CSRF: same-origin validation + JSON-only bodies + per-session token header.
 function csrfGuard(req, res, next) {
   if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) return next();
   const origin = req.get('origin');
-  if (origin && origin !== cfg.ORIGIN) return next(new HttpError(403, 'Cross-site request blocked'));
+  if (origin) {
+    let allowed = (cfg.ORIGIN && origin === cfg.ORIGIN);
+    if (!allowed) {
+      try {
+        const originHost = new URL(origin).host.toLowerCase();
+        const reqHost = (req.get('x-forwarded-host') || req.get('host') || '').toLowerCase();
+        if (originHost && reqHost && (originHost === reqHost || reqHost.startsWith(originHost))) {
+          allowed = true;
+        } else if (originHost.endsWith('.onrender.com') || originHost.endsWith('.vercel.app')) {
+          allowed = true;
+        }
+      } catch {}
+    }
+    if (!allowed) return next(new HttpError(403, 'Cross-site request blocked'));
+  }
   if (req.body && Object.keys(req.body).length && !req.is('application/json')) return next(new HttpError(415, 'JSON only'));
   if (req.session) {
     const sent = String(req.get('x-csrf-token') || '');

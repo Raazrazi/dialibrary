@@ -8,10 +8,10 @@
 const path = require('path');
 const { DatabaseSync } = require('node:sqlite'); // built into Node 22.5+, nothing to compile
 const Datastore = require('@seald-io/nedb');
-const { DATA_DIR } = require('./config');
+const { DATA_DIR, SQL_FILENAME } = require('./config');
 
 // ---------- SQL ----------
-const raw = new DatabaseSync(path.join(DATA_DIR, 'catalogue.sqlite'));
+const raw = new DatabaseSync(path.join(DATA_DIR, SQL_FILENAME || 'catalogue.sqlite'));
 raw.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
 
 // Small wrapper giving node:sqlite the prepare/exec/transaction shape the rest of the app uses.
