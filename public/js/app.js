@@ -337,8 +337,8 @@ VIEWS.desk = () => {
   <div class="card" style="margin-top:1rem"><h2>This session</h2><div id="deskLog">${deskLogHtml(log)}</div></div>`);
   $('#card').focus();
 };
-const deskLogHtml = (log) => log.length ? h`<div class="stack" style="gap:.5rem">${log.map((x) => h`<div class="row between"><span>${x.text}</span><span class="muted small">${x.at}</span></div>`)}</div>`.s : '<p class="muted">Nothing yet.</p>';
-const deskLog = (text) => { S.tmp.deskLog = [{ text, at: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }, ...(S.tmp.deskLog || [])].slice(0, 12); const d = $('#deskLog'); if (d) d.innerHTML = deskLogHtml(S.tmp.deskLog); };
+const deskLogHtml = (log) => log.length ? h`<div class="stack" style="gap:.5rem">${log.map((x) => h`<div class="row between"><span>${x.text}</span><span class="muted small">${x.at}</span></div>`)}</div>` : h`<p class="muted">Nothing yet.</p>`;
+const deskLog = (text) => { S.tmp.deskLog = [{ text, at: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }, ...(S.tmp.deskLog || [])].slice(0, 12); const d = $('#deskLog'); if (d) d.innerHTML = deskLogHtml(S.tmp.deskLog).s; };
 
 /* ---------- staff: patrons ---------- */
 VIEWS.patrons = async () => {
@@ -363,8 +363,8 @@ VIEWS.patron = async (id) => {
     <div class="grid cols-3"><div class="stat"><b>${d.loans.length}</b><span>Borrowed now</span></div><div class="stat ${d.loans.some((l) => l.overdue) ? 'alert' : 'good'}"><b>${d.loans.filter((l) => l.overdue).length}</b><span>Overdue</span></div><div class="stat ${d.owed ? 'alert' : ''}"><b>${money(d.owed)}</b><span>Unpaid${d.accruing ? ` · ${money(d.accruing)} building up` : ''}</span></div></div>
     <div class="card" style="margin-top:1rem"><h2>Borrowed now</h2>${d.loans.length ? h`<div class="table-wrap"><table><thead><tr><th>Book</th><th>Barcode</th><th>Due</th><th>Status</th><th></th></tr></thead><tbody>${d.loans.map((l) => h`<tr><td class="cell-title"><b>${l.title}</b><span>${l.author}</span></td><td class="num">${l.barcode}</td><td>${fmtDate(l.dueAt)}</td><td>${dueBadge(l)}${l.accruedFine ? h` <span class="small muted">${money(l.accruedFine)} so far</span>` : ''}</td><td class="r">${l.canRenew ? h`<button class="btn small soft" data-act="staff-renew" data-id="${l.id}">Renew</button>` : ''}</td></tr>`)}</tbody></table></div>` : emptyState('Nothing borrowed.')}</div>
     <div class="card" style="margin-top:1rem"><h2>Fines</h2>${finesTable(d.fines, true)}</div>
-    <div class="grid cols-2" style="margin-top:1rem"><div class="card"><h2>Reservations</h2>${d.holds.length ? h`<div class="stack" style="gap:.5rem">${d.holds.map((x) => h`<div class="row between"><span>Title #${x.biblioId}</span><span class="pill ${x.status === 'waiting' ? 'ok' : ''}">${x.status === 'waiting' ? 'Ready ' + (x.barcode || '') : 'Queued'}</span></div>`)}</div>` : '<p class="muted">None.</p>'}</div>
-    <div class="card"><h2>Recent returns</h2>${d.history.length ? h`<div class="stack" style="gap:.5rem">${d.history.slice(0, 8).map((l) => h`<div class="row between"><span>${l.title}</span><span class="muted small">${fmtDate(l.returnedAt)}</span></div>`)}</div>` : '<p class="muted">No history yet.</p>'}</div></div>
+    <div class="grid cols-2" style="margin-top:1rem"><div class="card"><h2>Reservations</h2>${d.holds.length ? h`<div class="stack" style="gap:.5rem">${d.holds.map((x) => h`<div class="row between"><span>Title #${x.biblioId}</span><span class="pill ${x.status === 'waiting' ? 'ok' : ''}">${x.status === 'waiting' ? 'Ready ' + (x.barcode || '') : 'Queued'}</span></div>`)}</div>` : h`<p class="muted">None.</p>`}</div>
+    <div class="card"><h2>Recent returns</h2>${d.history.length ? h`<div class="stack" style="gap:.5rem">${d.history.slice(0, 8).map((l) => h`<div class="row between"><span>${l.title}</span><span class="muted small">${fmtDate(l.returnedAt)}</span></div>`)}</div>` : h`<p class="muted">No history yet.</p>`}</div></div>
     <p class="muted small" style="margin-top:1rem">Joined ${fmtDate(p.joined)} · Last sign-in ${p.lastLogin ? fmtTime(p.lastLogin) : 'never'} · ${p.passkeys} passkey${p.passkeys === 1 ? '' : 's'}</p>`);
   } catch (e) { view(h`<div class="error">${e.message}</div>`); }
 };
@@ -446,7 +446,7 @@ VIEWS.users = async () => {
   try {
     const { users } = await api('/admin/users' + (role === 'student' ? '?role=student' : ''));
     $('#userbox').innerHTML = (users.length ? h`<div class="table-wrap"><table><thead><tr><th>Name</th><th>Username</th><th>Role</th><th>Passkeys</th><th>Last sign-in</th><th></th></tr></thead><tbody>${users.map((u) => h`<tr><td class="cell-title"><b>${u.name}</b><span>${u.email || ''}</span></td><td>${u.username}</td><td><span class="pill">${u.role}</span> ${u.active ? '' : h`<span class="pill bad">off</span>`}</td><td class="num">${u.passkeys}</td><td class="small muted">${u.lastLogin ? fmtTime(u.lastLogin) : 'never'}</td>
-      <td class="r"><div class="row" style="justify-content:flex-end;gap:.3rem">${u.id === S.me.id ? '<span class="muted small">You</span>' : h`<button class="btn small soft" data-act="reset-pw" data-id="${u.id}">Reset password</button>${u.passkeys ? h`<button class="btn small ghost" data-act="clear-keys" data-id="${u.id}">Clear passkeys</button>` : ''}<button class="btn small ghost" data-act="toggle-user" data-id="${u.id}" data-on="${u.active}">${u.active ? 'Deactivate' : 'Activate'}</button>`}</div></td></tr>`)}</tbody></table></div>` : emptyState('No accounts.')).s;
+      <td class="r"><div class="row" style="justify-content:flex-end;gap:.3rem">${u.id === S.me.id ? h`<span class="muted small">You</span>` : h`<button class="btn small soft" data-act="reset-pw" data-id="${u.id}">Reset password</button>${u.passkeys ? h`<button class="btn small ghost" data-act="clear-keys" data-id="${u.id}">Clear passkeys</button>` : ''}<button class="btn small ghost" data-act="toggle-user" data-id="${u.id}" data-on="${u.active}">${u.active ? 'Deactivate' : 'Activate'}</button>`}</div></td></tr>`)}</tbody></table></div>` : emptyState('No accounts.')).s;
   } catch (e) { $('#userbox').innerHTML = h`<div class="error">${e.message}</div>`.s; }
 };
 VIEWS.audit = async () => {
@@ -472,8 +472,8 @@ async function loadPasskeys() {
   try {
     const { passkeys } = await api('/auth/passkeys');
     box.innerHTML = h`<h2>Passkeys</h2><p class="muted" style="margin-bottom:1rem">Sign in with your fingerprint, face or device PIN. No password to remember.</p>
-      ${passkeys.length ? h`<div class="stack" style="gap:.5rem">${passkeys.map((p) => h`<div class="copy"><span><b>${p.name}</b><br><span class="muted small">Added ${fmtDate(p.createdAt)}${p.lastUsed ? ' · used ' + fmtDate(p.lastUsed) : ''}${p.backedUp ? ' · synced' : ''}</span></span><button class="btn small ghost" data-act="del-key" data-id="${p.id}">Remove</button></div>`)}</div>` : '<p class="muted">No passkeys yet.</p>'}
-      <div style="margin-top:1rem">${ok ? h`<label class="field">Device name<input type="text" id="pkname" maxlength="40" placeholder="My phone" value=""></label><button class="btn" style="margin-top:.8rem" data-act="add-key">Add a passkey</button>` : '<p class="hint">This browser does not support passkeys.</p>'}</div>`.s;
+      ${passkeys.length ? h`<div class="stack" style="gap:.5rem">${passkeys.map((p) => h`<div class="copy"><span><b>${p.name}</b><br><span class="muted small">Added ${fmtDate(p.createdAt)}${p.lastUsed ? ' · used ' + fmtDate(p.lastUsed) : ''}${p.backedUp ? ' · synced' : ''}</span></span><button class="btn small ghost" data-act="del-key" data-id="${p.id}">Remove</button></div>`)}</div>` : h`<p class="muted">No passkeys yet.</p>`}
+      <div style="margin-top:1rem">${ok ? h`<label class="field">Device name<input type="text" id="pkname" maxlength="40" placeholder="My phone" value=""></label><button class="btn" style="margin-top:.8rem" data-act="add-key">Add a passkey</button>` : h`<p class="hint">This browser does not support passkeys.</p>`}</div>`.s;
   } catch (e) { box.innerHTML = h`<div class="error">${e.message}</div>`.s; }
 }
 async function addPasskey() {
@@ -592,7 +592,7 @@ document.addEventListener('submit', async (e) => {
       try {
         const r = await api('/staff/checkin', { method: 'POST', body: { barcode: d.barcode.trim() } });
         box.innerHTML = h`<div class="desk-result ${r.fine || r.holdFor ? 'warn' : ''}"><b>${r.title}</b><span>Returned by ${r.patron}.</span>
-          ${r.fine ? h`<span>Fine: <b>${money(r.fine.amount)}</b> — ${r.daysOverdue} days late, ${r.fine.billableDays} billed at ${money(r.fine.ratePerDay)} a day.</span>` : r.daysOverdue ? '<span>Late, but inside the grace period. No fine.</span>' : ''}
+          ${r.fine ? h`<span>Fine: <b>${money(r.fine.amount)}</b> — ${r.daysOverdue} days late, ${r.fine.billableDays} billed at ${money(r.fine.ratePerDay)} a day.</span>` : r.daysOverdue ? h`<span>Late, but inside the grace period. No fine.</span>` : ''}
           ${r.holdFor ? h`<span>📌 Put on the hold shelf for <b>${r.holdFor.patronName}</b> until ${fmtDate(r.holdFor.expiresAt)}.</span>` : ''}</div>`.s;
         deskLog(`In: ${r.title}${r.fine ? ' (fine ' + money(r.fine.amount) + ')' : ''}`); f.barcode.value = ''; f.barcode.focus();
       } catch (err) { box.innerHTML = h`<div class="desk-result err"><b>Not checked in</b><span>${err.message}</span></div>`.s; }

@@ -107,8 +107,10 @@ r.post('/renew/:loanId', wrap(async (req, res) => {
 
 r.get('/loans', wrap(async (req, res) => {
   const mode = req.query.mode === 'overdue' ? 'overdue' : 'out';
-  const rows = (await sql.prepare(`${circ.LOAN_SELECT} WHERE l.returned_at IS NULL ${mode === 'overdue' ? 'AND l.due_at < ?' : 'AND ? IS NOT NULL'} ORDER BY l.due_at LIMIT 300`)
-    .all(new Date().toISOString())).map((l) => circ.decorateLoan(l));
+  const isOverdue = mode === 'overdue';
+  const query = `${circ.LOAN_SELECT} WHERE l.returned_at IS NULL ${isOverdue ? 'AND l.due_at < ?' : ''} ORDER BY l.due_at LIMIT 300`;
+  const args = isOverdue ? [new Date().toISOString()] : [];
+  const rows = (await sql.prepare(query).all(...args)).map((l) => circ.decorateLoan(l));
   const card = {};
   for (const l of rows) if (!(l.patronId in card)) { const u = await nosql.users.findOneAsync({ _id: l.patronId }); card[l.patronId] = u ? u.cardNumber : ''; }
   res.json({ loans: rows.map((l) => ({ ...l, cardNumber: card[l.patronId] })) });
