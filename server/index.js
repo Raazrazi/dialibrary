@@ -11,7 +11,7 @@ const { sql, nosql, initIndexes } = require('./db');
 const settings = require('./settings');
 const A = require('./auth');
 const circ = require('./circ');
-const { HttpError } = require('./util');
+const { HttpError, wrap } = require('./util');
 
 const app = express();
 app.disable('x-powered-by');
@@ -46,16 +46,20 @@ app.use('/api/admin/import', express.json({ limit: '6mb' }));
 app.use('/api', express.json({ limit: '100kb' }));
 app.use('/api', A.loadSession, A.csrfGuard);
 
-app.get('/api/public/stats', (req, res) => {
+app.get('/api/public/stats', wrap(async (req, res) => {
   const s = settings.get();
+  const titles = (await sql.prepare('SELECT COUNT(*) c FROM biblio').get())?.c || 0;
+  const items = (await sql.prepare('SELECT COUNT(*) c FROM items').get())?.c || 0;
+  const biblioRows = await sql.prepare(`SELECT subjects FROM biblio`).all();
+  const subjects = new Set(biblioRows.flatMap((r) => (r.subjects ? r.subjects.split('|') : []))).size;
   res.json({
     libraryName: s.libraryName, tagline: s.tagline, publicSearch: s.publicSearch,
     currency: s.currency, loanDays: s.loanDays, graceDays: s.graceDays, finePerDay: s.finePerDay, maxFine: s.maxFine,
-    titles: sql.prepare('SELECT COUNT(*) c FROM biblio').get().c,
-    items: sql.prepare('SELECT COUNT(*) c FROM items').get().c,
-    subjects: new Set(sql.prepare(`SELECT subjects FROM biblio`).all().flatMap((r) => (r.subjects ? r.subjects.split('|') : []))).size,
+    titles,
+    items,
+    subjects,
   });
-});
+}));
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/opac', require('./routes/opac'));
 app.use('/api/me', require('./routes/me'));
@@ -83,7 +87,7 @@ async function bootstrap() {
   await settings.load();
 
   try {
-    const bookCount = sql.prepare('SELECT COUNT(*) c FROM biblio').get()?.c || 0;
+    const bookCount = (await sql.prepare('SELECT COUNT(*) c FROM biblio').get())?.c || 0;
     if (bookCount === 0) {
       const { seed } = require('./seed');
       await seed({ force: true, quiet: true });

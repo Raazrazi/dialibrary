@@ -41,23 +41,41 @@ r.get('/search', wrap(async (req, res) => {
   const where = [], args = [];
   let from = 'biblio b';
   if (q) {
-    const m = ftsQuery(q, field);
-    if (!m) return res.json({ total: 0, page, per, results: [], facets: { subjects: [], languages: [] } });
-    from = 'biblio b JOIN biblio_fts f ON f.rowid = b.id';
-    where.push('biblio_fts MATCH ?'); args.push(m);
+    if (sql.isPg) {
+      const term = `%${q}%`;
+      if (field === 'title') {
+        where.push('b.title ILIKE ?'); args.push(term);
+      } else if (field === 'author') {
+        where.push('b.author ILIKE ?'); args.push(term);
+      } else if (field === 'subject') {
+        where.push('b.subjects ILIKE ?'); args.push(term);
+      } else if (field === 'isbn') {
+        where.push('b.isbn ILIKE ?'); args.push(term);
+      } else if (field === 'callno') {
+        where.push('b.call_number ILIKE ?'); args.push(term);
+      } else {
+        where.push('(b.title ILIKE ? OR b.author ILIKE ? OR b.subjects ILIKE ? OR b.isbn ILIKE ? OR b.call_number ILIKE ? OR b.publisher ILIKE ?)');
+        args.push(term, term, term, term, term, term);
+      }
+    } else {
+      const m = ftsQuery(q, field);
+      if (!m) return res.json({ total: 0, page, per, results: [], facets: { subjects: [], languages: [] } });
+      from = 'biblio b JOIN biblio_fts f ON f.rowid = b.id';
+      where.push('biblio_fts MATCH ?'); args.push(m);
+    }
   }
   if (subject) { where.push(`('|'||b.subjects||'|') LIKE ?`); args.push(`%|${subject.replace(/[%_]/g, '')}|%`); }
   if (language) { where.push('b.language = ?'); args.push(language); }
   if (onlyAvail) where.push(`EXISTS (SELECT 1 FROM items i WHERE i.biblio_id=b.id AND i.status='available')`);
   const W = where.length ? `WHERE ${where.join(' AND ')}` : '';
-  const order = q ? 'ORDER BY rank' : 'ORDER BY b.title COLLATE NOCASE';
+  const order = (!sql.isPg && q) ? 'ORDER BY rank' : 'ORDER BY LOWER(b.title)';
 
-  const total = sql.prepare(`SELECT COUNT(*) c FROM ${from} ${W}`).get(...args).c;
-  const rows = sql.prepare(`SELECT b.* FROM ${from} ${W} ${order} LIMIT ? OFFSET ?`).all(...args, per, (page - 1) * per);
-  const av = circ.availabilityMap(rows.map((b) => b.id));
+  const total = (await sql.prepare(`SELECT COUNT(*) c FROM ${from} ${W}`).get(...args)).c;
+  const rows = await sql.prepare(`SELECT b.* FROM ${from} ${W} ${order} LIMIT ? OFFSET ?`).all(...args, per, (page - 1) * per);
+  const av = await circ.availabilityMap(rows.map((b) => b.id));
 
   // facets over the whole filtered set
-  const ids = sql.prepare(`SELECT b.subjects s, b.language l FROM ${from} ${W}`).all(...args);
+  const ids = await sql.prepare(`SELECT b.subjects s, b.language l FROM ${from} ${W}`).all(...args);
   const sc = {}, lc = {};
   for (const x of ids) {
     for (const s of x.s ? x.s.split('|') : []) sc[s] = (sc[s] || 0) + 1;
@@ -68,17 +86,17 @@ r.get('/search', wrap(async (req, res) => {
 }));
 
 r.get('/new', wrap(async (req, res) => {
-  const rows = sql.prepare(`SELECT * FROM biblio ORDER BY id DESC LIMIT 8`).all();
-  const av = circ.availabilityMap(rows.map((b) => b.id));
+  const rows = await sql.prepare(`SELECT * FROM biblio ORDER BY id DESC LIMIT 8`).all();
+  const av = await circ.availabilityMap(rows.map((b) => b.id));
   res.json({ results: rows.map((b) => shape(b, av)) });
 }));
 
 r.get('/biblio/:id', wrap(async (req, res) => {
   const id = int(req.params.id, { min: 1, name: 'id' });
-  const b = sql.prepare(`SELECT * FROM biblio WHERE id=?`).get(id);
+  const b = await sql.prepare(`SELECT * FROM biblio WHERE id=?`).get(id);
   if (!b) throw new HttpError(404, 'Record not found');
-  const av = circ.availabilityMap([id]);
-  const items = sql.prepare(`SELECT i.id, i.barcode, i.location, i.status,
+  const av = await circ.availabilityMap([id]);
+  const items = await sql.prepare(`SELECT i.id, i.barcode, i.location, i.status,
     (SELECT due_at FROM loans WHERE item_id=i.id AND returned_at IS NULL) dueAt FROM items i WHERE biblio_id=? ORDER BY i.id`).all(id);
   const holds = (await circ.pendingHolds(id)).length;
   const out = { ...shape(b, av), description: b.description, items: items.map((i) => ({ ...i, barcode: req.user && req.user.role !== 'student' ? i.barcode : undefined })), holds };

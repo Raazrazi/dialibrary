@@ -45,30 +45,29 @@ r.post('/import/catalog', wrap(async (req, res) => {
   const out = { titlesCreated: 0, itemsCreated: 0, skipped: 0, errors: [] };
   const find = sql.prepare(`SELECT id FROM biblio WHERE (isbn <> '' AND isbn = ?) OR (lower(title)=lower(?) AND lower(author)=lower(?)) LIMIT 1`);
   const ins = sql.prepare(`INSERT INTO biblio (title,author,isbn,publisher,year,language,subjects,call_number,description) VALUES (?,?,?,?,?,?,?,?,?)`);
-  sql.transaction(() => {
-    rows.forEach((x, i) => {
-      try {
-        const title = clean(x.title, 200);
-        if (!title) { out.skipped++; out.errors.push(`Row ${i + 2}: missing title`); return; }
-        const isbn = clean(x.isbn, 20).replace(/[^0-9Xx-]/g, '');
-        const author = clean(x.author, 150);
-        let id = (find.get(isbn, title, author) || {}).id;
-        if (!id) {
-          const yr = parseInt(x.year, 10);
-          id = ins.run(title, author, isbn, clean(x.publisher, 100), yr >= 1000 && yr <= 2100 ? yr : null, clean(x.language, 40) || 'English',
-            clean(x.subjects, 200).split(/[|;]/).map((s) => s.trim()).filter(Boolean).join('|'), clean(x.call_number, 40), clean(x.description, 1500)).lastInsertRowid;
-          out.titlesCreated++;
-        }
-        const copies = Math.min(Math.max(parseInt(x.copies, 10) || 1, 1), 20);
-        for (let c = 0; c < copies; c++) {
-          let bc = c === 0 ? clean(x.barcode, 40) : '';
-          if (bc && sql.prepare('SELECT 1 FROM items WHERE barcode=?').get(bc)) { out.errors.push(`Row ${i + 2}: barcode ${bc} already exists, a new one was assigned`); bc = ''; }
-          staff.addItem(id, clean(x.location, 60) || 'Main Shelves', bc || undefined);
-          out.itemsCreated++;
-        }
-      } catch (e) { out.skipped++; out.errors.push(`Row ${i + 2}: ${e.message}`); }
-    });
-  })();
+  for (const [i, x] of rows.entries()) {
+    try {
+      const title = clean(x.title, 200);
+      if (!title) { out.skipped++; out.errors.push(`Row ${i + 2}: missing title`); continue; }
+      const isbn = clean(x.isbn, 20).replace(/[^0-9Xx-]/g, '');
+      const author = clean(x.author, 150);
+      let id = ((await find.get(isbn, title, author)) || {}).id;
+      if (!id) {
+        const yr = parseInt(x.year, 10);
+        const insRes = await ins.run(title, author, isbn, clean(x.publisher, 100), yr >= 1000 && yr <= 2100 ? yr : null, clean(x.language, 40) || 'English',
+          clean(x.subjects, 200).split(/[|;]/).map((s) => s.trim()).filter(Boolean).join('|'), clean(x.call_number, 40), clean(x.description, 1500));
+        id = insRes.lastInsertRowid;
+        out.titlesCreated++;
+      }
+      const copies = Math.min(Math.max(parseInt(x.copies, 10) || 1, 1), 20);
+      for (let c = 0; c < copies; c++) {
+        let bc = c === 0 ? clean(x.barcode, 40) : '';
+        if (bc && (await sql.prepare('SELECT 1 FROM items WHERE barcode=?').get(bc))) { out.errors.push(`Row ${i + 2}: barcode ${bc} already exists, a new one was assigned`); bc = ''; }
+        await staff.addItem(id, clean(x.location, 60) || 'Main Shelves', bc || undefined);
+        out.itemsCreated++;
+      }
+    } catch (e) { out.skipped++; out.errors.push(`Row ${i + 2}: ${e.message}`); }
+  }
   out.errors = out.errors.slice(0, 30);
   await A.audit(req, 'import.catalog', { titles: out.titlesCreated, items: out.itemsCreated });
   res.json(out);
@@ -106,7 +105,7 @@ r.post('/csv-credentials', wrap(async (req, res) => {
 
 /* ----- exports / backups ----- */
 r.get('/export/catalog.csv', wrap(async (req, res) => {
-  const rows = sql.prepare(`SELECT b.title,b.author,b.isbn,b.publisher,b.year,b.language,b.subjects,b.call_number,b.description,
+  const rows = await sql.prepare(`SELECT b.title,b.author,b.isbn,b.publisher,b.year,b.language,b.subjects,b.call_number,b.description,
     (SELECT group_concat(barcode,' ') FROM items WHERE biblio_id=b.id) barcodes, (SELECT COUNT(*) FROM items WHERE biblio_id=b.id) copies FROM biblio b ORDER BY b.id`).all();
   await A.audit(req, 'export.catalog', { rows: rows.length });
   res.type('text/csv').attachment('catalogue.csv').send(csv.stringify(rows, ['title', 'author', 'isbn', 'publisher', 'year', 'language', 'subjects', 'call_number', 'description', 'barcodes', 'copies']));
@@ -116,7 +115,7 @@ r.get('/export/backup.json', wrap(async (req, res) => {
   await A.audit(req, 'export.backup');
   res.attachment('library-backup.json').json({
     exportedAt: new Date().toISOString(), settings: settings.get(),
-    biblio: sql.prepare('SELECT * FROM biblio').all(), items: sql.prepare('SELECT * FROM items').all(), loans: sql.prepare('SELECT * FROM loans').all(),
+    biblio: await sql.prepare('SELECT * FROM biblio').all(), items: await sql.prepare('SELECT * FROM items').all(), loans: await sql.prepare('SELECT * FROM loans').all(),
     users: (await nosql.users.findAsync({})).map(strip), holds: await nosql.holds.findAsync({}), fines: await nosql.fines.findAsync({}),
   });
 }));

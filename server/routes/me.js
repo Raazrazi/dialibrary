@@ -13,30 +13,33 @@ r.use(A.requireRole('student'));
 r.get('/summary', wrap(async (req, res) => {
   const id = req.user._id;
   const s = settings.get();
-  const loans = await circ.annotateRenewable(circ.openLoansFor(id));
+  const openLoans = await circ.openLoansFor(id);
+  const loans = await circ.annotateRenewable(openLoans);
   const fines = await nosql.fines.findAsync({ patronId: id }).sort({ createdAt: -1 });
   const holds = await nosql.holds.findAsync({ patronId: id, status: { $in: ['pending', 'waiting'] } }).sort({ createdAt: 1 });
   const accruing = loans.reduce((t, l) => t + l.accruedFine, 0);
   const unpaid = fines.filter((f) => f.status === 'unpaid').reduce((t, f) => t + f.amount, 0);
-  res.json({ loans, fines, holds: holds.map(withTitle), unpaid, accruing,
+  const holdsWithTitle = await Promise.all(holds.map(withTitle));
+  res.json({ loans, fines, holds: holdsWithTitle, unpaid, accruing,
     limits: { maxLoans: s.maxLoans, maxHolds: s.maxHolds, blockAt: s.blockCheckoutAtFines } });
 }));
 
-const withTitle = (h) => {
-  const b = sql.prepare('SELECT title, author FROM biblio WHERE id=?').get(h.biblioId) || {};
+const withTitle = async (h) => {
+  const b = (await sql.prepare('SELECT title, author FROM biblio WHERE id=?').get(h.biblioId)) || {};
   return { id: h._id, biblioId: h.biblioId, title: b.title, author: b.author, status: h.status, createdAt: h.createdAt, barcode: h.barcode, expiresAt: h.expiresAt };
 };
 
-r.get('/history', wrap(async (req, res) => res.json({ loans: circ.historyFor(req.user._id, 50) })));
+r.get('/history', wrap(async (req, res) => res.json({ loans: await circ.historyFor(req.user._id, 50) })));
 
 r.post('/holds', wrap(async (req, res) => {
   const biblioId = int(req.body.biblioId, { min: 1, name: 'Book' });
   const s = settings.get();
-  if (!sql.prepare('SELECT 1 FROM biblio WHERE id=?').get(biblioId)) throw new HttpError(404, 'Book not found');
+  if (!(await sql.prepare('SELECT 1 FROM biblio WHERE id=?').get(biblioId))) throw new HttpError(404, 'Book not found');
   const mine = await nosql.holds.findAsync({ patronId: req.user._id, status: { $in: ['pending', 'waiting'] } });
   if (mine.length >= s.maxHolds) throw new HttpError(409, `You can reserve up to ${s.maxHolds} books at a time`);
   if (mine.some((h) => h.biblioId === biblioId)) throw new HttpError(409, 'You have already reserved this book');
-  if (circ.openLoansFor(req.user._id).some((l) => l.biblioId === biblioId)) throw new HttpError(409, 'You already have this book');
+  const open = await circ.openLoansFor(req.user._id);
+  if (open.some((l) => l.biblioId === biblioId)) throw new HttpError(409, 'You already have this book');
   const hold = await nosql.holds.insertAsync({
     patronId: req.user._id, patronName: req.user.name, biblioId, status: 'pending', createdAt: new Date().toISOString(),
   });
@@ -50,7 +53,7 @@ r.delete('/holds/:id', wrap(async (req, res) => {
   if (!h) throw new HttpError(404, 'Reservation not found');
   await nosql.holds.updateAsync({ _id: h._id }, { $set: { status: 'cancelled' } });
   if (h.itemId) {
-    sql.prepare(`UPDATE items SET status='available' WHERE id=? AND status='on_hold'`).run(h.itemId);
+    await sql.prepare(`UPDATE items SET status='available' WHERE id=? AND status='on_hold'`).run(h.itemId);
     await circ.promoteNextHold(h.biblioId);
   }
   res.json({ ok: true });
@@ -66,8 +69,8 @@ r.get('/shelf', wrap(async (req, res) => {
   const s = await nosql.shelves.findOneAsync({ _id: req.user._id });
   const ids = s ? s.biblioIds : [];
   if (!ids.length) return res.json({ results: [] });
-  const rows = sql.prepare(`SELECT * FROM biblio WHERE id IN (${ids.map(() => '?').join(',')})`).all(...ids);
-  const av = circ.availabilityMap(ids);
+  const rows = await sql.prepare(`SELECT * FROM biblio WHERE id IN (${ids.map(() => '?').join(',')})`).all(...ids);
+  const av = await circ.availabilityMap(ids);
   res.json({ results: rows.map((b) => ({ id: b.id, title: b.title, author: b.author, year: b.year, available: (av[b.id] || {}).available || 0, copies: (av[b.id] || {}).copies || 0 })) });
 }));
 

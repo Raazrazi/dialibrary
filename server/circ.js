@@ -39,10 +39,14 @@ function decorateLoan(l, s = settings.get()) {
     canRenew: false,
   };
 }
-const openLoansFor = (patronId) =>
-  sql.prepare(`${LOAN_SELECT} WHERE l.patron_id = ? AND l.returned_at IS NULL ORDER BY l.due_at`).all(patronId).map((l) => decorateLoan(l));
-const historyFor = (patronId, limit = 30) =>
-  sql.prepare(`${LOAN_SELECT} WHERE l.patron_id = ? AND l.returned_at IS NOT NULL ORDER BY l.returned_at DESC LIMIT ?`).all(patronId, limit).map((l) => decorateLoan(l));
+const openLoansFor = async (patronId) => {
+  const rows = await sql.prepare(`${LOAN_SELECT} WHERE l.patron_id = ? AND l.returned_at IS NULL ORDER BY l.due_at`).all(patronId);
+  return rows.map((l) => decorateLoan(l));
+};
+const historyFor = async (patronId, limit = 30) => {
+  const rows = await sql.prepare(`${LOAN_SELECT} WHERE l.patron_id = ? AND l.returned_at IS NOT NULL ORDER BY l.returned_at DESC LIMIT ?`).all(patronId, limit);
+  return rows.map((l) => decorateLoan(l));
+};
 
 /* ---------- holds ---------- */
 async function pendingHolds(biblioId) {
@@ -54,7 +58,7 @@ async function sweepHolds() {
   for (const h of expired) {
     await nosql.holds.updateAsync({ _id: h._id }, { $set: { status: 'expired' } });
     if (h.itemId) {
-      sql.prepare(`UPDATE items SET status='available' WHERE id=? AND status='on_hold'`).run(h.itemId);
+      await sql.prepare(`UPDATE items SET status='available' WHERE id=? AND status='on_hold'`).run(h.itemId);
       await promoteNextHold(h.biblioId);
     }
   }
@@ -63,10 +67,10 @@ async function sweepHolds() {
 async function promoteNextHold(biblioId) {
   const next = await nosql.holds.findOneAsync({ biblioId, status: 'pending' }).sort({ createdAt: 1 });
   if (!next) return null;
-  const item = sql.prepare(`SELECT * FROM items WHERE biblio_id=? AND status='available' ORDER BY id LIMIT 1`).get(biblioId);
+  const item = await sql.prepare(`SELECT * FROM items WHERE biblio_id=? AND status='available' ORDER BY id LIMIT 1`).get(biblioId);
   if (!item) return null;
   const s = settings.get();
-  sql.prepare(`UPDATE items SET status='on_hold' WHERE id=?`).run(item.id);
+  await sql.prepare(`UPDATE items SET status='on_hold' WHERE id=?`).run(item.id);
   await nosql.holds.updateAsync({ _id: next._id }, { $set: {
     status: 'waiting', itemId: item.id, barcode: item.barcode,
     expiresAt: endOfDay(addDays(new Date(), s.holdWaitDays)).toISOString(),
@@ -81,7 +85,7 @@ async function checkout({ staff, cardNumber, barcode, override = false }) {
   if (!patron) throw new HttpError(404, 'No student found with that card number');
   if (!patron.active) throw new HttpError(409, 'This student account is deactivated');
 
-  const item = sql.prepare(`SELECT i.*, b.title FROM items i JOIN biblio b ON b.id=i.biblio_id WHERE i.barcode=?`).get(barcode);
+  const item = await sql.prepare(`SELECT i.*, b.title FROM items i JOIN biblio b ON b.id=i.biblio_id WHERE i.barcode=?`).get(barcode);
   if (!item) throw new HttpError(404, 'No item with that barcode');
 
   const warnings = [];
@@ -94,7 +98,7 @@ async function checkout({ staff, cardNumber, barcode, override = false }) {
     if (!waiting || waiting.patronId !== patron._id) throw new HttpError(409, 'This copy is on the hold shelf for another student');
   }
 
-  const open = openLoansFor(patron._id);
+  const open = await openLoansFor(patron._id);
   if (open.length >= s.maxLoans) throw new HttpError(409, `Loan limit reached (${s.maxLoans} books)`);
   if (open.some((l) => l.biblioId === item.biblio_id)) throw new HttpError(409, 'Student already has a copy of this title');
 
@@ -107,7 +111,7 @@ async function checkout({ staff, cardNumber, barcode, override = false }) {
 
   if (!myHold && item.status === 'available') {
     const queue = await pendingHolds(item.biblio_id);
-    const free = sql.prepare(`SELECT COUNT(*) c FROM items WHERE biblio_id=? AND status='available'`).get(item.biblio_id).c;
+    const free = (await sql.prepare(`SELECT COUNT(*) c FROM items WHERE biblio_id=? AND status='available'`).get(item.biblio_id)).c;
     if (queue.filter((h) => h.status === 'pending').length >= free) {
       if (!override) throw new HttpError(409, 'Other students are waiting for this title');
       warnings.push('Hold queue overridden');
@@ -116,29 +120,26 @@ async function checkout({ staff, cardNumber, barcode, override = false }) {
 
   const now = new Date();
   const due = endOfDay(addDays(now, s.loanDays));
-  const info = sql.transaction(() => {
-    sql.prepare(`UPDATE items SET status='checked_out' WHERE id=?`).run(item.id);
-    return sql.prepare(`INSERT INTO loans (item_id,patron_id,patron_name,out_at,due_at,issued_by) VALUES (?,?,?,?,?,?)`)
-      .run(item.id, patron._id, patron.name, now.toISOString(), due.toISOString(), staff.name);
-  })();
+  await sql.prepare(`UPDATE items SET status='checked_out' WHERE id=?`).run(item.id);
+  const info = await sql.prepare(`INSERT INTO loans (item_id,patron_id,patron_name,out_at,due_at,issued_by) VALUES (?,?,?,?,?,?)`)
+    .run(item.id, patron._id, patron.name, now.toISOString(), due.toISOString(), staff.name);
+
   if (myHold) await nosql.holds.updateAsync({ _id: myHold._id }, { $set: { status: 'fulfilled', fulfilledAt: now.toISOString() } });
   return { loanId: info.lastInsertRowid, title: item.title, patron: patron.name, dueAt: due.toISOString(), warnings };
 }
 
 /* ---------- checkin ---------- */
 async function checkin({ barcode }) {
-  const row = sql.prepare(`${LOAN_SELECT} WHERE i.barcode=? AND l.returned_at IS NULL`).get(barcode);
+  const row = await sql.prepare(`${LOAN_SELECT} WHERE i.barcode=? AND l.returned_at IS NULL`).get(barcode);
   if (!row) {
-    const it = sql.prepare(`SELECT status FROM items WHERE barcode=?`).get(barcode);
+    const it = await sql.prepare(`SELECT status FROM items WHERE barcode=?`).get(barcode);
     if (!it) throw new HttpError(404, 'No item with that barcode');
     throw new HttpError(409, 'That item is not checked out');
   }
   const s = settings.get();
   const now = new Date();
-  sql.transaction(() => {
-    sql.prepare(`UPDATE loans SET returned_at=? WHERE id=?`).run(now.toISOString(), row.id);
-    sql.prepare(`UPDATE items SET status='available' WHERE id=?`).run(row.item_id);
-  })();
+  await sql.prepare(`UPDATE loans SET returned_at=? WHERE id=?`).run(now.toISOString(), row.id);
+  await sql.prepare(`UPDATE items SET status='available' WHERE id=?`).run(row.item_id);
 
   let fine = null;
   const f = fineFor(row.due_at, now, s);
@@ -160,14 +161,14 @@ async function checkin({ barcode }) {
 /* ---------- renew ---------- */
 async function renew(loanId, { patronId } = {}) {
   const s = settings.get();
-  const row = sql.prepare(`${LOAN_SELECT} WHERE l.id=? AND l.returned_at IS NULL`).get(loanId);
+  const row = await sql.prepare(`${LOAN_SELECT} WHERE l.id=? AND l.returned_at IS NULL`).get(loanId);
   if (!row || (patronId && row.patron_id !== patronId)) throw new HttpError(404, 'Loan not found');
   if (row.renewals >= s.maxRenewals) throw new HttpError(409, `Renewal limit reached (${s.maxRenewals})`);
   if (overdueDays(row.due_at, new Date()) > 0) throw new HttpError(409, 'Overdue books must be returned first');
   const others = (await pendingHolds(row.biblio_id)).filter((h) => h.patronId !== row.patron_id);
   if (others.length) throw new HttpError(409, 'Another student has reserved this title');
   const due = endOfDay(addDays(row.due_at, s.loanDays));
-  sql.prepare(`UPDATE loans SET due_at=?, renewals=renewals+1 WHERE id=?`).run(due.toISOString(), loanId);
+  await sql.prepare(`UPDATE loans SET due_at=?, renewals=renewals+1 WHERE id=?`).run(due.toISOString(), loanId);
   return { title: row.title, dueAt: due.toISOString(), renewals: row.renewals + 1 };
 }
 
@@ -183,10 +184,10 @@ async function annotateRenewable(loans) {
 }
 
 /* ---------- catalogue availability ---------- */
-function availabilityMap(ids) {
+async function availabilityMap(ids) {
   if (!ids.length) return {};
   const q = ids.map(() => '?').join(',');
-  const rows = sql.prepare(`
+  const rows = await sql.prepare(`
     SELECT i.biblio_id id, COUNT(*) copies,
            SUM(i.status='available') available,
            MIN(CASE WHEN i.status='checked_out' THEN (SELECT due_at FROM loans WHERE item_id=i.id AND returned_at IS NULL) END) nextDue

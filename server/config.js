@@ -17,6 +17,14 @@ fs.mkdirSync(DATA_DIR, { recursive: true });
 
 const SQL_FILENAME = process.env.SQL_DATABASE || 'catalogue.sqlite';
 
+let DATABASE_URL = process.env.DATABASE_URL || process.env.POSTGRES_URL || null;
+if (DATABASE_URL && DATABASE_URL.includes('dpg-dbtaq4s9v7es73a380h0-a') && !DATABASE_URL.includes('.render.com') && !process.env.RENDER) {
+  DATABASE_URL = DATABASE_URL.replace('dpg-dbtaq4s9v7es73a380h0-a', 'dpg-dbtaq4s9v7es73a380h0-a.oregon-postgres.render.com');
+}
+
+const MONGODB_URI = process.env.MONGODB_URI || null;
+const MONGODB_DB = process.env.MONGODB_DB || 'dialibrary';
+
 let defaultRpId = 'localhost';
 try {
   if (process.env.RENDER_EXTERNAL_HOSTNAME) {
@@ -38,6 +46,9 @@ module.exports = {
   PROD: process.env.NODE_ENV === 'production' || isVercel || isRender,
   DATA_DIR,
   SQL_FILENAME,
+  DATABASE_URL,
+  MONGODB_URI,
+  MONGODB_DB,
   IS_VERCEL: isVercel,
   IS_RENDER: isRender,
   SESSION_IDLE_MS: 30 * 60 * 1000,

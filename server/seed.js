@@ -76,7 +76,7 @@ async function seed(options = {}) {
   // If force is requested and files exist, clean them
   if (force) {
     try {
-      sql.exec('DELETE FROM loans; DELETE FROM items; DELETE FROM biblio;');
+      await sql.exec('DELETE FROM loans; DELETE FROM items; DELETE FROM biblio;');
       await nosql.users.removeAsync({}, { multi: true });
       await nosql.holds.removeAsync({}, { multi: true });
       await nosql.fines.removeAsync({}, { multi: true });
@@ -112,31 +112,34 @@ async function seed(options = {}) {
   let n = 0, bc = 0;
   const locs = ['Main Shelves', 'Reference', 'Malayalam Section', 'Science Wing'];
   for (const b of BOOKS) {
-    const id = insB.run(b[0], b[1], isbn13(++n), b[3], b[2], b[4], b[5], b[6], b[8]).lastInsertRowid;
-    for (let c = 0; c < b[7]; c++) insI.run(id, 'B' + String(++bc).padStart(6, '0'), b[4] === 'Malayalam' ? locs[2] : /Science|Physics|Chemistry|Biology/.test(b[5]) ? locs[3] : locs[0]);
+    const res = await insB.run(b[0], b[1], isbn13(++n), b[3], b[2], b[4], b[5], b[6], b[8]);
+    const id = res.lastInsertRowid;
+    for (let c = 0; c < b[7]; c++) {
+      await insI.run(id, 'B' + String(++bc).padStart(6, '0'), b[4] === 'Malayalam' ? locs[2] : /Science|Physics|Chemistry|Biology/.test(b[5]) ? locs[3] : locs[0]);
+    }
   }
 
   // Loans with back-dated dates so the desk shows realistic activity.
   const s = settings.get();
-  const lend = (stu, title, daysAgo, returnedDaysAgo) => {
-    const item = sql.prepare(`SELECT i.id FROM items i JOIN biblio b ON b.id=i.biblio_id WHERE b.title=? AND i.status='available' LIMIT 1`).get(title);
+  const lend = async (stu, title, daysAgo, returnedDaysAgo) => {
+    const item = await sql.prepare(`SELECT i.id FROM items i JOIN biblio b ON b.id=i.biblio_id WHERE b.title=? AND i.status='available' LIMIT 1`).get(title);
     if (!item) return;
     const out = addDays(new Date(), -daysAgo), due = endOfDay(addDays(out, s.loanDays));
     const ret = returnedDaysAgo == null ? null : addDays(new Date(), -returnedDaysAgo).toISOString();
-    sql.prepare(`INSERT INTO loans (item_id,patron_id,patron_name,out_at,due_at,returned_at,issued_by) VALUES (?,?,?,?,?,?,?)`)
+    await sql.prepare(`INSERT INTO loans (item_id,patron_id,patron_name,out_at,due_at,returned_at,issued_by) VALUES (?,?,?,?,?,?,?)`)
       .run(item.id, stu._id, stu.name, out.toISOString(), due.toISOString(), ret, 'Fathima Rahman');
-    if (!ret) sql.prepare(`UPDATE items SET status='checked_out' WHERE id=?`).run(item.id);
+    if (!ret) await sql.prepare(`UPDATE items SET status='checked_out' WHERE id=?`).run(item.id);
   };
-  lend(students[0], 'Clean Code', 5); lend(students[0], 'Atomic Habits', 20);           // one overdue (6 days)
-  lend(students[0], 'Wings of Fire', 40, 30);
-  lend(students[1], 'Pride and Prejudice', 3); lend(students[1], 'Nineteen Eighty-Four', 27); // overdue 13
-  lend(students[2], 'Cosmos', 10); lend(students[2], 'A Brief History of Time', 12);
-  lend(students[3], 'Principles of Economics', 8); lend(students[4], 'The Wealth of Nations', 15); // overdue 1 (inside grace)
-  lend(students[5], 'Organic Chemistry', 2); lend(students[6], 'Operating System Concepts', 6);
-  lend(students[6], 'Database System Concepts', 6); lend(students[7], 'Chemmeen', 11);
-  lend(students[8], 'Discrete Mathematics and Its Applications', 1); lend(students[11], 'Hands-On Machine Learning', 4);
-  lend(students[11], 'Hands-On Machine Learning', 5);
-  lend(students[10], 'The Selfish Gene', 19, 9);
+  await lend(students[0], 'Clean Code', 5); await lend(students[0], 'Atomic Habits', 20);           // one overdue (6 days)
+  await lend(students[0], 'Wings of Fire', 40, 30);
+  await lend(students[1], 'Pride and Prejudice', 3); await lend(students[1], 'Nineteen Eighty-Four', 27); // overdue 13
+  await lend(students[2], 'Cosmos', 10); await lend(students[2], 'A Brief History of Time', 12);
+  await lend(students[3], 'Principles of Economics', 8); await lend(students[4], 'The Wealth of Nations', 15); // overdue 1 (inside grace)
+  await lend(students[5], 'Organic Chemistry', 2); await lend(students[6], 'Operating System Concepts', 6);
+  await lend(students[6], 'Database System Concepts', 6); await lend(students[7], 'Chemmeen', 11);
+  await lend(students[8], 'Discrete Mathematics and Its Applications', 1); await lend(students[11], 'Hands-On Machine Learning', 4);
+  await lend(students[11], 'Hands-On Machine Learning', 5);
+  await lend(students[10], 'The Selfish Gene', 19, 9);
 
   const fine = (stu, title, days, status = 'unpaid') => nosql.fines.insertAsync({
     patronId: stu._id, patronName: stu.name, loanId: 0, kind: 'overdue', title, barcode: '', dueAt: addDays(new Date(), -days - 3).toISOString(),
@@ -147,8 +150,8 @@ async function seed(options = {}) {
   await fine(students[3], 'Indian Polity', 9); await fine(students[1], 'The Alchemist', 16);
   await fine(students[4], 'Cosmos', 5, 'paid'); await fine(students[2], 'Sapiens', 4);
 
-  const hold = (stu, title) => {
-    const b = sql.prepare('SELECT id FROM biblio WHERE title=?').get(title);
+  const hold = async (stu, title) => {
+    const b = await sql.prepare('SELECT id FROM biblio WHERE title=?').get(title);
     return nosql.holds.insertAsync({ patronId: stu._id, patronName: stu.name, biblioId: b.id, status: 'pending', createdAt: new Date().toISOString() });
   };
   await hold(students[3], 'Hands-On Machine Learning'); await hold(students[9], 'Hands-On Machine Learning');
@@ -165,7 +168,9 @@ if (require.main === module) {
     console.error('Data already exists in ' + cfg.DATA_DIR + '.\nRun "npm run seed -- --force" to wipe it and load demo data.');
     process.exit(1);
   }
-  existing.forEach((f) => fs.rmSync(path.join(cfg.DATA_DIR, f), { force: true }));
+  existing.forEach((f) => {
+    try { fs.rmSync(path.join(cfg.DATA_DIR, f), { force: true }); } catch (_) {}
+  });
   seed({ force: true }).then(() => process.exit(0)).catch((e) => { console.error(e); process.exit(1); });
 } else {
   module.exports = { seed, DEMO_PASSWORD };

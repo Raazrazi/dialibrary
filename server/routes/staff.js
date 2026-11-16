@@ -16,19 +16,21 @@ const escRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 r.get('/stats', wrap(async (req, res) => {
   const now = new Date().toISOString();
   const endToday = new Date(); endToday.setHours(23, 59, 59, 999);
-  const open = sql.prepare(`SELECT COUNT(*) c FROM loans WHERE returned_at IS NULL`).get().c;
-  const overdue = sql.prepare(`SELECT COUNT(*) c FROM loans WHERE returned_at IS NULL AND due_at < ?`).get(now).c;
-  const dueToday = sql.prepare(`SELECT COUNT(*) c FROM loans WHERE returned_at IS NULL AND due_at >= ? AND due_at <= ?`).get(now, endToday.toISOString()).c;
+  const open = (await sql.prepare(`SELECT COUNT(*) c FROM loans WHERE returned_at IS NULL`).get()).c;
+  const overdue = (await sql.prepare(`SELECT COUNT(*) c FROM loans WHERE returned_at IS NULL AND due_at < ?`).get(now)).c;
+  const dueToday = (await sql.prepare(`SELECT COUNT(*) c FROM loans WHERE returned_at IS NULL AND due_at >= ? AND due_at <= ?`).get(now, endToday.toISOString())).c;
   const since = new Date(Date.now() - 7 * DAY).toISOString();
-  const out7 = sql.prepare(`SELECT substr(out_at,1,10) d, COUNT(*) c FROM loans WHERE out_at >= ? GROUP BY d`).all(since);
+  const out7 = await sql.prepare(`SELECT substr(out_at,1,10) d, COUNT(*) c FROM loans WHERE out_at >= ? GROUP BY d`).all(since);
   const waiting = await nosql.holds.countAsync({ status: 'waiting' });
   const pending = await nosql.holds.countAsync({ status: 'pending' });
   const fines = await nosql.fines.findAsync({ status: 'unpaid' });
+  const titles = (await sql.prepare('SELECT COUNT(*) c FROM biblio').get()).c;
+  const items = (await sql.prepare('SELECT COUNT(*) c FROM items').get()).c;
   res.json({
     openLoans: open, overdue, dueToday, holdsWaiting: waiting, holdsPending: pending,
     unpaidFines: fines.reduce((t, f) => t + f.amount, 0), unpaidCount: fines.length,
     students: await nosql.users.countAsync({ role: 'student', active: true }),
-    titles: sql.prepare('SELECT COUNT(*) c FROM biblio').get().c, items: sql.prepare('SELECT COUNT(*) c FROM items').get().c,
+    titles, items,
     loansPerDay: out7,
   });
 }));
@@ -43,7 +45,7 @@ r.get('/patrons', wrap(async (req, res) => {
   const list = await nosql.users.findAsync(base).sort({ name: 1 }).limit(60);
   const out = [];
   for (const u of list) {
-    const loans = circ.openLoansFor(u._id);
+    const loans = await circ.openLoansFor(u._id);
     out.push({ ...patronRow(u), loans: loans.length, overdue: loans.filter((l) => l.overdue).length, owed: await circ.unpaidTotal(u._id) });
   }
   res.json({ patrons: out });
@@ -52,10 +54,11 @@ r.get('/patrons', wrap(async (req, res) => {
 r.get('/patrons/:id', wrap(async (req, res) => {
   const u = await nosql.users.findOneAsync({ _id: req.params.id, role: 'student' });
   if (!u) throw new HttpError(404, 'Student not found');
-  const loans = await circ.annotateRenewable(circ.openLoansFor(u._id));
+  const openLoans = await circ.openLoansFor(u._id);
+  const loans = await circ.annotateRenewable(openLoans);
   res.json({
     patron: { ...patronRow(u), joined: u.createdAt, lastLogin: u.lastLogin || null, passkeys: (u.passkeys || []).length },
-    loans, history: circ.historyFor(u._id, 25),
+    loans, history: await circ.historyFor(u._id, 25),
     fines: await nosql.fines.findAsync({ patronId: u._id }).sort({ createdAt: -1 }),
     holds: await nosql.holds.findAsync({ patronId: u._id, status: { $in: ['pending', 'waiting'] } }),
     owed: await circ.unpaidTotal(u._id), accruing: loans.reduce((t, l) => t + l.accruedFine, 0),
@@ -104,8 +107,8 @@ r.post('/renew/:loanId', wrap(async (req, res) => {
 
 r.get('/loans', wrap(async (req, res) => {
   const mode = req.query.mode === 'overdue' ? 'overdue' : 'out';
-  const rows = sql.prepare(`${circ.LOAN_SELECT} WHERE l.returned_at IS NULL ${mode === 'overdue' ? 'AND l.due_at < ?' : 'AND ? IS NOT NULL'} ORDER BY l.due_at LIMIT 300`)
-    .all(new Date().toISOString()).map((l) => circ.decorateLoan(l));
+  const rows = (await sql.prepare(`${circ.LOAN_SELECT} WHERE l.returned_at IS NULL ${mode === 'overdue' ? 'AND l.due_at < ?' : 'AND ? IS NOT NULL'} ORDER BY l.due_at LIMIT 300`)
+    .all(new Date().toISOString())).map((l) => circ.decorateLoan(l));
   const card = {};
   for (const l of rows) if (!(l.patronId in card)) { const u = await nosql.users.findOneAsync({ _id: l.patronId }); card[l.patronId] = u ? u.cardNumber : ''; }
   res.json({ loans: rows.map((l) => ({ ...l, cardNumber: card[l.patronId] })) });
@@ -113,10 +116,11 @@ r.get('/loans', wrap(async (req, res) => {
 
 r.get('/holds', wrap(async (req, res) => {
   const holds = await nosql.holds.findAsync({ status: { $in: ['pending', 'waiting'] } }).sort({ createdAt: 1 });
-  res.json({ holds: holds.map((h) => {
-    const b = sql.prepare('SELECT title FROM biblio WHERE id=?').get(h.biblioId) || {};
+  const mapped = await Promise.all(holds.map(async (h) => {
+    const b = (await sql.prepare('SELECT title FROM biblio WHERE id=?').get(h.biblioId)) || {};
     return { id: h._id, title: b.title, patronName: h.patronName, status: h.status, barcode: h.barcode, expiresAt: h.expiresAt, createdAt: h.createdAt };
-  }) });
+  }));
+  res.json({ holds: mapped });
 }));
 
 /* ----- fines ----- */
@@ -147,29 +151,29 @@ r.post('/biblio', wrap(async (req, res) => {
     callNumber: str(req.body.callNumber, { max: 40 }), description: str(req.body.description, { max: 1500 }),
   };
   const copies = int(req.body.copies, { min: 1, max: 20, def: 1, name: 'Copies' });
-  const info = sql.prepare(`INSERT INTO biblio (title,author,isbn,publisher,year,language,subjects,call_number,description) VALUES (?,?,?,?,?,?,?,?,?)`)
+  const info = await sql.prepare(`INSERT INTO biblio (title,author,isbn,publisher,year,language,subjects,call_number,description) VALUES (?,?,?,?,?,?,?,?,?)`)
     .run(title, b.author, b.isbn, b.publisher, b.year, b.language, b.subjects, b.callNumber, b.description);
   const barcodes = [];
-  for (let i = 0; i < copies; i++) barcodes.push(addItem(info.lastInsertRowid, str(req.body.location, { max: 60 }) || 'Main Shelves'));
+  for (let i = 0; i < copies; i++) barcodes.push(await addItem(info.lastInsertRowid, str(req.body.location, { max: 60 }) || 'Main Shelves'));
   await A.audit(req, 'biblio.create', { id: info.lastInsertRowid, title });
   res.json({ id: info.lastInsertRowid, barcodes });
 }));
 
-function nextBarcode() {
-  const row = sql.prepare(`SELECT MAX(CAST(substr(barcode,2) AS INTEGER)) m FROM items WHERE barcode GLOB 'B[0-9]*'`).get();
-  return 'B' + String((row.m || 0) + 1).padStart(6, '0');
+async function nextBarcode() {
+  const row = await sql.prepare(`SELECT MAX(CAST(substr(barcode,2) AS INTEGER)) m FROM items WHERE barcode LIKE 'B%'`).get();
+  return 'B' + String((row?.m || 0) + 1).padStart(6, '0');
 }
-function addItem(biblioId, location, barcode) {
-  const code = barcode || nextBarcode();
-  sql.prepare(`INSERT INTO items (biblio_id,barcode,location) VALUES (?,?,?)`).run(biblioId, code, location);
+async function addItem(biblioId, location, barcode) {
+  const code = barcode || (await nextBarcode());
+  await sql.prepare(`INSERT INTO items (biblio_id,barcode,location) VALUES (?,?,?)`).run(biblioId, code, location);
   return code;
 }
 r.post('/items', wrap(async (req, res) => {
   const biblioId = int(req.body.biblioId, { min: 1, name: 'Record' });
-  if (!sql.prepare('SELECT 1 FROM biblio WHERE id=?').get(biblioId)) throw new HttpError(404, 'Record not found');
+  if (!(await sql.prepare('SELECT 1 FROM biblio WHERE id=?').get(biblioId))) throw new HttpError(404, 'Record not found');
   const bc = str(req.body.barcode, { max: 40 });
-  if (bc && sql.prepare('SELECT 1 FROM items WHERE barcode=?').get(bc)) throw new HttpError(409, 'That barcode already exists');
-  const code = addItem(biblioId, str(req.body.location, { max: 60 }) || 'Main Shelves', bc);
+  if (bc && (await sql.prepare('SELECT 1 FROM items WHERE barcode=?').get(bc))) throw new HttpError(409, 'That barcode already exists');
+  const code = await addItem(biblioId, str(req.body.location, { max: 60 }) || 'Main Shelves', bc);
   await A.audit(req, 'item.create', { barcode: code });
   res.json({ barcode: code });
 }));
@@ -177,20 +181,20 @@ r.post('/items', wrap(async (req, res) => {
 r.patch('/items/:barcode', wrap(async (req, res) => {
   const status = str(req.body.status, { max: 20 });
   if (!['available', 'lost', 'withdrawn', 'repair'].includes(status)) throw bad('Status must be available, lost, withdrawn or repair');
-  const it = sql.prepare(`SELECT i.*, b.title FROM items i JOIN biblio b ON b.id=i.biblio_id WHERE i.barcode=?`).get(req.params.barcode);
+  const it = await sql.prepare(`SELECT i.*, b.title FROM items i JOIN biblio b ON b.id=i.biblio_id WHERE i.barcode=?`).get(req.params.barcode);
   if (!it) throw new HttpError(404, 'Item not found');
-  const loan = sql.prepare(`SELECT * FROM loans WHERE item_id=? AND returned_at IS NULL`).get(it.id);
+  const loan = await sql.prepare(`SELECT * FROM loans WHERE item_id=? AND returned_at IS NULL`).get(it.id);
   if (loan && status !== 'lost') throw new HttpError(409, 'Check the item in before changing its status');
   if (loan && status === 'lost') {
     const s = settings.get();
-    sql.prepare(`UPDATE loans SET returned_at=? WHERE id=?`).run(new Date().toISOString(), loan.id);
+    await sql.prepare(`UPDATE loans SET returned_at=? WHERE id=?`).run(new Date().toISOString(), loan.id);
     await nosql.fines.insertAsync({
       patronId: loan.patron_id, patronName: loan.patron_name, loanId: loan.id, kind: 'lost', title: it.title, barcode: it.barcode,
       dueAt: loan.due_at, returnedAt: null, daysOverdue: circ.overdueDays(loan.due_at, new Date()), billableDays: 0, ratePerDay: 0,
       amount: s.lostCharge, status: 'unpaid', createdAt: new Date().toISOString(),
     });
   }
-  sql.prepare(`UPDATE items SET status=? WHERE id=?`).run(status, it.id);
+  await sql.prepare(`UPDATE items SET status=? WHERE id=?`).run(status, it.id);
   if (status === 'available') await circ.promoteNextHold(it.biblio_id);
   await A.audit(req, 'item.status', { barcode: it.barcode, status });
   res.json({ ok: true });

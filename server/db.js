@@ -1,105 +1,224 @@
 'use strict';
 /**
- * Two databases, on purpose:
- *   SQL   (SQLite)  -> the catalogue: bibliographic records, physical items, loans
- *   NoSQL (NeDB)    -> everything else: users, passkeys, sessions, settings,
- *                      holds, fines, audit trail, shelves
+ * Dual database architecture:
+ *   SQL   -> PostgreSQL (Cloud / Render) or SQLite (local fallback)
+ *            Houses bibliographic records (biblio), physical copies (items), loans
+ *   NoSQL -> MongoDB Atlas (Cloud) or NeDB (local fallback)
+ *            Houses users, passkeys, sessions, settings, holds, fines, audit logs, shelves
  */
 const path = require('path');
-const { DatabaseSync } = require('node:sqlite'); // built into Node 22.5+, nothing to compile
-const Datastore = require('@seald-io/nedb');
-const { DATA_DIR, SQL_FILENAME } = require('./config');
+const cfg = require('./config');
 
-// ---------- SQL ----------
-const raw = new DatabaseSync(path.join(DATA_DIR, SQL_FILENAME || 'catalogue.sqlite'));
-raw.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
+// ========================================================
+// 1. NoSQL Layer: MongoDB Atlas (or NeDB fallback)
+// ========================================================
+let nosql = {};
 
-// Small wrapper giving node:sqlite the prepare/exec/transaction shape the rest of the app uses.
-const sql = {
-  exec: (q) => raw.exec(q),
-  prepare: (q) => raw.prepare(q),
-  transaction: (fn) => (...args) => {
-    raw.exec('BEGIN');
-    try { const out = fn(...args); raw.exec('COMMIT'); return out; }
-    catch (e) { try { raw.exec('ROLLBACK'); } catch {} throw e; }
-  },
-};
+if (cfg.MONGODB_URI) {
+  const { MongoClient } = require('mongodb');
+  const mongoClient = new MongoClient(cfg.MONGODB_URI, {
+    maxPoolSize: 10,
+    serverSelectionTimeoutMS: 8000,
+  });
 
-sql.exec(`
-CREATE TABLE IF NOT EXISTS biblio (
-  id           INTEGER PRIMARY KEY AUTOINCREMENT,
-  title        TEXT NOT NULL,
-  author       TEXT NOT NULL DEFAULT '',
-  isbn         TEXT NOT NULL DEFAULT '',
-  publisher    TEXT NOT NULL DEFAULT '',
-  year         INTEGER,
-  language     TEXT NOT NULL DEFAULT 'English',
-  subjects     TEXT NOT NULL DEFAULT '',          -- pipe separated: "Physics|Cosmology"
-  call_number  TEXT NOT NULL DEFAULT '',
-  description  TEXT NOT NULL DEFAULT '',
-  created_at   TEXT NOT NULL DEFAULT (datetime('now'))
-);
-CREATE INDEX IF NOT EXISTS idx_biblio_isbn ON biblio(isbn);
+  const getCollection = (name) => {
+    let col = null;
+    const ensureCol = async () => {
+      if (!col) {
+        await mongoClient.connect();
+        col = mongoClient.db(cfg.MONGODB_DB || 'dialibrary').collection(name);
+      }
+      return col;
+    };
 
-CREATE TABLE IF NOT EXISTS items (
-  id         INTEGER PRIMARY KEY AUTOINCREMENT,
-  biblio_id  INTEGER NOT NULL REFERENCES biblio(id) ON DELETE CASCADE,
-  barcode    TEXT NOT NULL UNIQUE,
-  location   TEXT NOT NULL DEFAULT 'Main Shelves',
-  status     TEXT NOT NULL DEFAULT 'available'
-             CHECK (status IN ('available','checked_out','on_hold','lost','withdrawn','repair')),
-  added_at   TEXT NOT NULL DEFAULT (datetime('now'))
-);
-CREATE INDEX IF NOT EXISTS idx_items_biblio ON items(biblio_id);
+    return {
+      findOneAsync: async (query) => {
+        const c = await ensureCol();
+        return c.findOne(query);
+      },
+      findAsync: (query) => {
+        let sortObj = null;
+        let limitVal = null;
+        let skipVal = null;
 
-CREATE TABLE IF NOT EXISTS loans (
-  id            INTEGER PRIMARY KEY AUTOINCREMENT,
-  item_id       INTEGER NOT NULL REFERENCES items(id),
-  patron_id     TEXT NOT NULL,                    -- NoSQL user _id
-  patron_name   TEXT NOT NULL,
-  out_at        TEXT NOT NULL,
-  due_at        TEXT NOT NULL,
-  returned_at   TEXT,
-  renewals      INTEGER NOT NULL DEFAULT 0,
-  issued_by     TEXT NOT NULL DEFAULT ''
-);
-CREATE INDEX IF NOT EXISTS idx_loans_patron ON loans(patron_id);
-CREATE INDEX IF NOT EXISTS idx_loans_open ON loans(returned_at);
+        const exec = async () => {
+          const c = await ensureCol();
+          let cursor = c.find(query);
+          if (sortObj) cursor = cursor.sort(sortObj);
+          if (skipVal != null) cursor = cursor.skip(skipVal);
+          if (limitVal != null) cursor = cursor.limit(limitVal);
+          return cursor.toArray();
+        };
 
-CREATE VIRTUAL TABLE IF NOT EXISTS biblio_fts USING fts5(
-  title, author, subjects, isbn, call_number, publisher, description,
-  content='biblio', content_rowid='id', tokenize='unicode61 remove_diacritics 2'
-);
-CREATE TRIGGER IF NOT EXISTS biblio_ai AFTER INSERT ON biblio BEGIN
-  INSERT INTO biblio_fts(rowid,title,author,subjects,isbn,call_number,publisher,description)
-  VALUES (new.id,new.title,new.author,new.subjects,new.isbn,new.call_number,new.publisher,new.description);
-END;
-CREATE TRIGGER IF NOT EXISTS biblio_ad AFTER DELETE ON biblio BEGIN
-  INSERT INTO biblio_fts(biblio_fts,rowid,title,author,subjects,isbn,call_number,publisher,description)
-  VALUES ('delete',old.id,old.title,old.author,old.subjects,old.isbn,old.call_number,old.publisher,old.description);
-END;
-CREATE TRIGGER IF NOT EXISTS biblio_au AFTER UPDATE ON biblio BEGIN
-  INSERT INTO biblio_fts(biblio_fts,rowid,title,author,subjects,isbn,call_number,publisher,description)
-  VALUES ('delete',old.id,old.title,old.author,old.subjects,old.isbn,old.call_number,old.publisher,old.description);
-  INSERT INTO biblio_fts(rowid,title,author,subjects,isbn,call_number,publisher,description)
-  VALUES (new.id,new.title,new.author,new.subjects,new.isbn,new.call_number,new.publisher,new.description);
-END;
-`);
+        const chain = {
+          sort: (s) => { sortObj = s; return chain; },
+          limit: (l) => { limitVal = l; return chain; },
+          skip: (k) => { skipVal = k; return chain; },
+          then: (resolve, reject) => exec().then(resolve, reject),
+          catch: (reject) => exec().catch(reject),
+        };
+        return chain;
+      },
+      insertAsync: async (doc) => {
+        const c = await ensureCol();
+        const copy = { ...doc };
+        const res = await c.insertOne(copy);
+        if (!copy._id) copy._id = res.insertedId;
+        return copy;
+      },
+      updateAsync: async (query, update, options = {}) => {
+        const c = await ensureCol();
+        if (options.multi) {
+          const res = await c.updateMany(query, update, { upsert: !!options.upsert });
+          return res.modifiedCount;
+        }
+        const res = await c.updateOne(query, update, { upsert: !!options.upsert });
+        return res.modifiedCount;
+      },
+      removeAsync: async (query, options = {}) => {
+        const c = await ensureCol();
+        if (options.multi) {
+          const res = await c.deleteMany(query);
+          return res.deletedCount;
+        }
+        const res = await c.deleteOne(query);
+        return res.deletedCount;
+      },
+      countAsync: async (query) => {
+        const c = await ensureCol();
+        return c.countDocuments(query);
+      },
+      ensureIndexAsync: async (options) => {
+        const c = await ensureCol();
+        const spec = { [options.fieldName]: 1 };
+        const opts = {};
+        if (options.unique) opts.unique = true;
+        if (options.sparse) opts.sparse = true;
+        if (options.expireAfterSeconds != null) opts.expireAfterSeconds = options.expireAfterSeconds;
+        return c.createIndex(spec, opts);
+      },
+    };
+  };
 
-// ---------- NoSQL ----------
-const store = (name) =>
-  new Datastore({ filename: path.join(DATA_DIR, `${name}.db`), autoload: true });
+  nosql = {
+    users: getCollection('users'),
+    sessions: getCollection('sessions'),
+    challenges: getCollection('challenges'),
+    settings: getCollection('settings'),
+    holds: getCollection('holds'),
+    fines: getCollection('fines'),
+    audit: getCollection('audit'),
+    shelves: getCollection('shelves'),
+    _client: mongoClient,
+  };
+} else {
+  // NeDB Fallback for local offline development
+  const Datastore = require('@seald-io/nedb');
+  const store = (name) =>
+    new Datastore({ filename: path.join(cfg.DATA_DIR, `${name}.db`), autoload: true });
 
-const nosql = {
-  users: store('users'),         // students, librarians, admins (+ embedded passkeys)
-  sessions: store('sessions'),
-  challenges: store('challenges'),
-  settings: store('settings'),
-  holds: store('holds'),
-  fines: store('fines'),
-  audit: store('audit'),
-  shelves: store('shelves'),     // per-student saved lists
-};
+  nosql = {
+    users: store('users'),
+    sessions: store('sessions'),
+    challenges: store('challenges'),
+    settings: store('settings'),
+    holds: store('holds'),
+    fines: store('fines'),
+    audit: store('audit'),
+    shelves: store('shelves'),
+  };
+}
+
+// ========================================================
+// 2. SQL Layer: PostgreSQL (Cloud) or SQLite (local fallback)
+// ========================================================
+let sql = {};
+let isPg = false;
+
+if (cfg.DATABASE_URL) {
+  isPg = true;
+  const { Pool, types } = require('pg');
+  // Parse PostgreSQL BIGINT (type 20) as integer so COUNT(*) returns a Number
+  types.setTypeParser(20, (val) => parseInt(val, 10));
+
+  const pool = new Pool({
+    connectionString: cfg.DATABASE_URL,
+    ssl: { rejectUnauthorized: false },
+    max: 10,
+    idleTimeoutMillis: 30000,
+  });
+
+  function convertSql(query) {
+    let idx = 0;
+    let q = query.replace(/\?/g, () => `$${++idx}`);
+    q = q.replace(/GLOB\s+'B\[0-9\]\*'/gi, "LIKE 'B%'");
+    q = q.replace(/SUM\(i\.status='available'\)/gi, "SUM(CASE WHEN i.status='available' THEN 1 ELSE 0 END)");
+    q = q.replace(/COLLATE\s+NOCASE/gi, '');
+    q = q.replace(/group_concat\(([^,)]+),\s*'([^']+)'\)/gi, "string_agg($1, '$2')");
+    q = q.replace(/group_concat\(([^)]+)\)/gi, "string_agg($1, ',')");
+    q = q.replace(/substr\(out_at,1,10\)/gi, "substr(CAST(out_at AS TEXT),1,10)");
+    if (/^\s*INSERT\s+INTO\s+/i.test(q) && !/RETURNING/i.test(q)) {
+      q += ' RETURNING id';
+    }
+    return q;
+  }
+
+  sql = {
+    isPg: true,
+    pool,
+    exec: async (q) => pool.query(q),
+    prepare: (rawSql) => {
+      const q = convertSql(rawSql);
+      return {
+        get: async (...args) => {
+          const res = await pool.query(q, args);
+          return res.rows[0];
+        },
+        all: async (...args) => {
+          const res = await pool.query(q, args);
+          return res.rows;
+        },
+        run: async (...args) => {
+          const res = await pool.query(q, args);
+          return {
+            lastInsertRowid: res.rows[0] ? res.rows[0].id : null,
+            changes: res.rowCount,
+          };
+        },
+      };
+    },
+    transaction: (fn) => async (...args) => {
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        const out = await fn(...args);
+        await client.query('COMMIT');
+        return out;
+      } catch (e) {
+        try { await client.query('ROLLBACK'); } catch (_) {}
+        throw e;
+      } finally {
+        client.release();
+      }
+    },
+  };
+} else {
+  // SQLite Fallback
+  const { DatabaseSync } = require('node:sqlite');
+  const raw = new DatabaseSync(path.join(cfg.DATA_DIR, cfg.SQL_FILENAME || 'catalogue.sqlite'));
+  raw.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
+
+  sql = {
+    isPg: false,
+    exec: (q) => raw.exec(q),
+    prepare: (q) => raw.prepare(q),
+    transaction: (fn) => (...args) => {
+      raw.exec('BEGIN');
+      try { const out = fn(...args); raw.exec('COMMIT'); return out; }
+      catch (e) { try { raw.exec('ROLLBACK'); } catch {} throw e; }
+    },
+  };
+}
 
 async function initIndexes() {
   await nosql.users.ensureIndexAsync({ fieldName: 'username', unique: true });
@@ -108,6 +227,95 @@ async function initIndexes() {
   await nosql.challenges.ensureIndexAsync({ fieldName: 'expireAt', expireAfterSeconds: 0 });
   await nosql.holds.ensureIndexAsync({ fieldName: 'patronId' });
   await nosql.fines.ensureIndexAsync({ fieldName: 'patronId' });
+
+  if (isPg) {
+    await sql.exec(`
+      CREATE TABLE IF NOT EXISTS biblio (
+        id SERIAL PRIMARY KEY,
+        title TEXT NOT NULL,
+        author TEXT NOT NULL DEFAULT '',
+        isbn TEXT NOT NULL DEFAULT '',
+        publisher TEXT NOT NULL DEFAULT '',
+        year INTEGER,
+        language TEXT NOT NULL DEFAULT 'English',
+        subjects TEXT NOT NULL DEFAULT '',
+        call_number TEXT NOT NULL DEFAULT '',
+        description TEXT NOT NULL DEFAULT '',
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_biblio_isbn ON biblio(isbn);
+
+      CREATE TABLE IF NOT EXISTS items (
+        id SERIAL PRIMARY KEY,
+        biblio_id INTEGER NOT NULL REFERENCES biblio(id) ON DELETE CASCADE,
+        barcode TEXT NOT NULL UNIQUE,
+        location TEXT NOT NULL DEFAULT 'Main Shelves',
+        status TEXT NOT NULL DEFAULT 'available' CHECK (status IN ('available','checked_out','on_hold','lost','withdrawn','repair')),
+        added_at TIMESTAMPTZ DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_items_biblio ON items(biblio_id);
+
+      CREATE TABLE IF NOT EXISTS loans (
+        id SERIAL PRIMARY KEY,
+        item_id INTEGER NOT NULL REFERENCES items(id),
+        patron_id TEXT NOT NULL,
+        patron_name TEXT NOT NULL,
+        out_at TIMESTAMPTZ NOT NULL,
+        due_at TIMESTAMPTZ NOT NULL,
+        returned_at TIMESTAMPTZ,
+        renewals INTEGER NOT NULL DEFAULT 0,
+        issued_by TEXT NOT NULL DEFAULT ''
+      );
+      CREATE INDEX IF NOT EXISTS idx_loans_patron ON loans(patron_id);
+      CREATE INDEX IF NOT EXISTS idx_loans_open ON loans(returned_at);
+    `);
+  } else {
+    sql.exec(`
+      CREATE TABLE IF NOT EXISTS biblio (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        title TEXT NOT NULL,
+        author TEXT NOT NULL DEFAULT '',
+        isbn TEXT NOT NULL DEFAULT '',
+        publisher TEXT NOT NULL DEFAULT '',
+        year INTEGER,
+        language TEXT NOT NULL DEFAULT 'English',
+        subjects TEXT NOT NULL DEFAULT '',
+        call_number TEXT NOT NULL DEFAULT '',
+        description TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_biblio_isbn ON biblio(isbn);
+
+      CREATE TABLE IF NOT EXISTS items (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        biblio_id INTEGER NOT NULL REFERENCES biblio(id) ON DELETE CASCADE,
+        barcode TEXT NOT NULL UNIQUE,
+        location TEXT NOT NULL DEFAULT 'Main Shelves',
+        status TEXT NOT NULL DEFAULT 'available' CHECK (status IN ('available','checked_out','on_hold','lost','withdrawn','repair')),
+        added_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_items_biblio ON items(biblio_id);
+
+      CREATE TABLE IF NOT EXISTS loans (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        item_id INTEGER NOT NULL REFERENCES items(id),
+        patron_id TEXT NOT NULL,
+        patron_name TEXT NOT NULL,
+        out_at TEXT NOT NULL,
+        due_at TEXT NOT NULL,
+        returned_at TEXT,
+        renewals INTEGER NOT NULL DEFAULT 0,
+        issued_by TEXT NOT NULL DEFAULT ''
+      );
+      CREATE INDEX IF NOT EXISTS idx_loans_patron ON loans(patron_id);
+      CREATE INDEX IF NOT EXISTS idx_loans_open ON loans(returned_at);
+
+      CREATE VIRTUAL TABLE IF NOT EXISTS biblio_fts USING fts5(
+        title, author, subjects, isbn, call_number, publisher, description,
+        content='biblio', content_rowid='id', tokenize='unicode61 remove_diacritics 2'
+      );
+    `);
+  }
 }
 
 module.exports = { sql, nosql, initIndexes };
