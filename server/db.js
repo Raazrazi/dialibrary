@@ -15,11 +15,50 @@ const cfg = require('./config');
 let nosql = {};
 
 if (cfg.MONGODB_URI) {
-  const { MongoClient } = require('mongodb');
+  const { MongoClient, ObjectId } = require('mongodb');
   const mongoClient = new MongoClient(cfg.MONGODB_URI, {
     maxPoolSize: 10,
     serverSelectionTimeoutMS: 8000,
   });
+
+  const ID_FIELDS = new Set(['_id', 'patronId', 'userId', 'itemId']);
+
+  function normalizeQuery(query) {
+    if (!query || typeof query !== 'object') return query;
+    const out = Array.isArray(query) ? [] : {};
+    for (const [k, v] of Object.entries(query)) {
+      if (ID_FIELDS.has(k)) {
+        if (typeof v === 'string' && ObjectId.isValid(v) && v.length === 24) {
+          out[k] = { $in: [v, new ObjectId(v)] };
+        } else if (v && typeof v === 'object' && v.$in) {
+          out[k] = {
+            $in: v.$in.flatMap((item) =>
+              typeof item === 'string' && ObjectId.isValid(item) && item.length === 24
+                ? [item, new ObjectId(item)]
+                : [item]
+            ),
+          };
+        } else {
+          out[k] = v;
+        }
+      } else if (Array.isArray(v)) {
+        out[k] = v.map((item) => (typeof item === 'object' ? normalizeQuery(item) : item));
+      } else if (v && typeof v === 'object' && !(v instanceof ObjectId) && !(v instanceof Date) && !(v instanceof RegExp)) {
+        out[k] = normalizeQuery(v);
+      } else {
+        out[k] = v;
+      }
+    }
+    return out;
+  }
+
+  function normalizeDoc(doc) {
+    if (!doc || typeof doc !== 'object') return doc;
+    if (doc._id && typeof doc._id === 'object') doc._id = doc._id.toString();
+    if (doc.patronId && typeof doc.patronId === 'object') doc.patronId = doc.patronId.toString();
+    if (doc.userId && typeof doc.userId === 'object') doc.userId = doc.userId.toString();
+    return doc;
+  }
 
   const getCollection = (name) => {
     let col = null;
@@ -34,7 +73,8 @@ if (cfg.MONGODB_URI) {
     return {
       findOneAsync: async (query) => {
         const c = await ensureCol();
-        return c.findOne(query);
+        const doc = await c.findOne(normalizeQuery(query));
+        return normalizeDoc(doc);
       },
       findAsync: (query) => {
         let sortObj = null;
@@ -43,11 +83,12 @@ if (cfg.MONGODB_URI) {
 
         const exec = async () => {
           const c = await ensureCol();
-          let cursor = c.find(query);
+          let cursor = c.find(normalizeQuery(query));
           if (sortObj) cursor = cursor.sort(sortObj);
           if (skipVal != null) cursor = cursor.skip(skipVal);
           if (limitVal != null) cursor = cursor.limit(limitVal);
-          return cursor.toArray();
+          const docs = await cursor.toArray();
+          return docs.map(normalizeDoc);
         };
 
         const chain = {
@@ -62,31 +103,39 @@ if (cfg.MONGODB_URI) {
       insertAsync: async (doc) => {
         const c = await ensureCol();
         const copy = { ...doc };
-        const res = await c.insertOne(copy);
-        if (!copy._id) copy._id = res.insertedId;
-        return copy;
+        if (!copy._id) copy._id = new ObjectId().toHexString();
+        await c.insertOne(copy);
+        return normalizeDoc(copy);
       },
       updateAsync: async (query, update, options = {}) => {
         const c = await ensureCol();
+        const q = normalizeQuery(query);
+        let op = update;
+        const hasAtomic = Object.keys(update).some((k) => k.startsWith('$'));
+        if (!hasAtomic) {
+          const { _id, ...rest } = update;
+          op = { $set: rest };
+        }
         if (options.multi) {
-          const res = await c.updateMany(query, update, { upsert: !!options.upsert });
+          const res = await c.updateMany(q, op, { upsert: !!options.upsert });
           return res.modifiedCount;
         }
-        const res = await c.updateOne(query, update, { upsert: !!options.upsert });
+        const res = await c.updateOne(q, op, { upsert: !!options.upsert });
         return res.modifiedCount;
       },
       removeAsync: async (query, options = {}) => {
         const c = await ensureCol();
+        const q = normalizeQuery(query);
         if (options.multi) {
-          const res = await c.deleteMany(query);
+          const res = await c.deleteMany(q);
           return res.deletedCount;
         }
-        const res = await c.deleteOne(query);
+        const res = await c.deleteOne(q);
         return res.deletedCount;
       },
       countAsync: async (query) => {
         const c = await ensureCol();
-        return c.countDocuments(query);
+        return c.countDocuments(normalizeQuery(query));
       },
       ensureIndexAsync: async (options) => {
         const c = await ensureCol();
