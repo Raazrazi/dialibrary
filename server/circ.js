@@ -65,7 +65,7 @@ async function sweepHolds() {
 }
 // Give a freshly freed item to the oldest pending hold, if any.
 async function promoteNextHold(biblioId) {
-  const next = await nosql.holds.findOneAsync({ biblioId, status: 'pending' }).sort({ createdAt: 1 });
+  const [next] = await nosql.holds.findAsync({ biblioId, status: 'pending' }).sort({ createdAt: 1 }).limit(1);
   if (!next) return null;
   const item = await sql.prepare(`SELECT * FROM items WHERE biblio_id=? AND status='available' ORDER BY id LIMIT 1`).get(biblioId);
   if (!item) return null;
