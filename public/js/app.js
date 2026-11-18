@@ -697,5 +697,8 @@ addEventListener('hashchange', () => { closeModal(); render(); scrollTo(0, 0); }
     else { S.cfg = { ...S.cfg, ...j.settings }; }
   } catch (e) { /* offline: show sign in */ }
   render();
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => navigator.serviceWorker.register('/service-worker.js').catch(() => {}));
+  }
 })();
 })();

@@ -11,6 +11,7 @@
   <link rel="icon"
     href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%23d7263d'/%3E%3Cpath d='M7 9.5c3-1 6-.8 9 1v13c-3-1.8-6-2-9-1zM25 9.5c-3-1-6-.8-9 1v13c3-1.8 6-2 9-1z' fill='%23fff'/%3E%3C/svg%3E">
   <link rel="manifest" href="/manifest.webmanifest">
+  <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <meta name="apple-mobile-web-app-title" content="Library">
@@ -691,12 +692,7 @@
     </div>
   </footer>
 
-  <script src="/js/landing.js" defer></script>
-  <script>
-    if ('serviceWorker' in navigator) {
-      window.addEventListener('load', () => navigator.serviceWorker.register('/service-worker.js'));
-    }
-  </script>
+  <script src="/js/landing.js?v=2" defer></script>
 </body>
 
 </html>
