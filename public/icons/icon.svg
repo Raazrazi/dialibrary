@@ -1,5 +1,11 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
   <rect width="512" height="512" rx="110" fill="#d7263d"/>
-  <path d="M112 152c48-16 96-13 144 16v208c-48-29-96-32-144-16zM400 152c-48-16-96-13-144 16v208c48-29 96-32 144-16z" fill="#fff"/>
-  <path d="M328 64v128l32-25 32 25V83z" fill="#ffd0d5"/>
+  <g transform="translate(256, 256)">
+    <g transform="scale(12) translate(-16, -14.5)">
+      <!-- Open Book Pages -->
+      <path d="M7 9.5c3-1 6-.8 9 1v13c-3-1.8-6-2-9-1zM25 9.5c-3-1-6-.8-9 1v13c3-1.8 6-2 9-1z" fill="#fff"/>
+      <!-- Ribbon Bookmark -->
+      <path d="M20.5 4v8l2-1.6 2 1.6V5.2z" fill="#ffd0d5"/>
+    </g>
+  </g>
 </svg>
