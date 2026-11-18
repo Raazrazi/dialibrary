@@ -511,7 +511,7 @@ VIEWS.install = async () => {
     <p class="hint">The install option appears only where your browser supports it. On unsupported browsers, the steps above still let you add a shortcut.</p>
   </div>`);
 };
-ACTIONS['install-app'] = async () => {
+async function installApp() {
   if (isStandalone()) {
     toast('The library is already running as an installed application.', 'ok');
     return;
@@ -531,8 +531,8 @@ ACTIONS['install-app'] = async () => {
     }
   }
   location.hash = '#install';
-};
-ACTIONS['install-help'] = () => { location.hash = '#install'; };
+}
+function installHelpNav() { location.hash = '#install'; }
 async function loadPasskeys() {
   const box = $('#pkcard'); if (!box) return;
   const ok = window.SimpleWebAuthnBrowser && SimpleWebAuthnBrowser.browserSupportsWebAuthn();
@@ -589,6 +589,8 @@ const formData = (f) => Object.fromEntries(new FormData(f).entries());
 
 /* ============ events ============ */
 const ACTIONS = {
+  'install-app': installApp,
+  'install-help': installHelpNav,
   logout: async () => { try { await api('/auth/logout', { method: 'POST', body: {} }); } catch {} S.me = null; S.csrf = null; history.replaceState(null, '', '/app'); render(); },
   role: (el) => { authRole = el.dataset.role; const u = $('#u') && $('#u').value; renderPublic(); if (u) $('#u').value = u; },
   'passkey-login': passkeyLogin,
