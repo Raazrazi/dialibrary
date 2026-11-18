@@ -50,6 +50,7 @@ const ICON = {
   desk: '<path d="M3 8h18v4H3zM5 12v8m14-8v8M9 8V5h6v3"/>',
   users: '<path d="M9 11a3.500 3.500 0 1 0 0-7 3.500 3.500 0 0 0 0 7zM2.500 20a6.500 6.500 0 0 1 13 0M16 4.500a3.500 3.500 0 0 1 0 6.500M18 14c2 .7 3.500 2.700 3.500 6"/>',
   clock: '<circle cx="12" cy="12" r="8.500"/><path d="M12 7v5l3 2"/>',
+  install: '<rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4M9 10l3 3 3-3M12 6v7"/>',
   list: '<path d="M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
   cog: '<circle cx="12" cy="12" r="3.200"/><path d="M12 3v2.500M12 18.500V21M3 12h2.500M18.500 12H21M5.600 5.600l1.800 1.800M16.600 16.600l1.800 1.800M5.600 18.400l1.800-1.800M16.600 7.400l1.800-1.800"/>',
@@ -66,9 +67,9 @@ const cover = (title, big) => { let s = 0; for (const c of title) s = (s * 31 + 
 
 /* ============ navigation ============ */
 const NAV = {
-  student: [['search', 'Catalogue', 'search'], ['account', 'My library', 'book'], ['security', 'Security', 'shield']],
-  librarian: [['dashboard', 'Overview', 'home'], ['desk', 'Desk', 'desk'], ['patrons', 'Students', 'users'], ['loans', 'Loans', 'clock'], ['holds', 'Holds', 'list'], ['search', 'Catalogue', 'search'], ['security', 'Security', 'shield']],
-  admin: [['dashboard', 'Overview', 'home'], ['desk', 'Desk', 'desk'], ['patrons', 'Students', 'users'], ['loans', 'Loans', 'clock'], ['holds', 'Holds', 'list'], ['search', 'Catalogue', 'search'], ['settings', 'Settings', 'cog'], ['users', 'Accounts', 'user'], ['audit', 'Activity', 'log'], ['security', 'Security', 'shield']],
+  student: [['search', 'Catalogue', 'search'], ['account', 'My library', 'book'], ['security', 'Security', 'shield'], ['install', 'Install app', 'install']],
+  librarian: [['dashboard', 'Overview', 'home'], ['desk', 'Desk', 'desk'], ['patrons', 'Students', 'users'], ['loans', 'Loans', 'clock'], ['holds', 'Holds', 'list'], ['search', 'Catalogue', 'search'], ['security', 'Security', 'shield'], ['install', 'Install app', 'install']],
+  admin: [['dashboard', 'Overview', 'home'], ['desk', 'Desk', 'desk'], ['patrons', 'Students', 'users'], ['loans', 'Loans', 'clock'], ['holds', 'Holds', 'list'], ['search', 'Catalogue', 'search'], ['settings', 'Settings', 'cog'], ['users', 'Accounts', 'user'], ['audit', 'Activity', 'log'], ['security', 'Security', 'shield'], ['install', 'Install app', 'install']],
 };
 const home = () => ({ student: 'search', librarian: 'dashboard', admin: 'dashboard' }[S.me.role]);
 const route = () => { const [name, ...rest] = (location.hash.slice(1) || '').split('/'); return { name, arg: rest.join('/') }; };
@@ -268,7 +269,7 @@ async function openBook(id) {
 
 /* ---------- student: my library ---------- */
 VIEWS.account = async () => {
-  view(h`<div class="page-head"><div><h1>My library</h1><p>Hello, ${S.me.name.split(' ')[0]}. Here is everything you have borrowed.</p></div></div><div id="acct"><div class="empty">Loading…</div></div>`);
+  view(h`<div class="page-head"><div><h1>My library</h1><p>Hello, ${S.me.name.split(' ')[0]}. Here is everything you have borrowed.</p></div>${!isStandalone() ? h`<div class="row"><button class="btn soft" data-act="install-app">${ico('install')} Install as app</button></div>` : ''}</div><div id="acct"><div class="empty">Loading…</div></div>`);
   try {
     const d = await api('/me/summary'); S.tmp.acct = d;
     const tab = S.tmp.acctTab || 'loans';
@@ -298,7 +299,7 @@ async function acctTab(tab) {
 
 /* ---------- staff: dashboard ---------- */
 VIEWS.dashboard = async () => {
-  view(h`<div class="page-head"><div><h1>Good ${new Date().getHours() < 12 ? 'morning' : new Date().getHours() < 17 ? 'afternoon' : 'evening'}, ${S.me.name.split(' ')[0]}</h1><p>Here is how the library looks right now.</p></div><div class="row"><a class="btn" href="#desk">${ico('desk')} Open the desk</a></div></div><div id="dash"><div class="empty">Loading…</div></div>`);
+  view(h`<div class="page-head"><div><h1>Good ${new Date().getHours() < 12 ? 'morning' : new Date().getHours() < 17 ? 'afternoon' : 'evening'}, ${S.me.name.split(' ')[0]}</h1><p>Here is how the library looks right now.</p></div><div class="row">${!isStandalone() ? h`<button class="btn soft" data-act="install-app">${ico('install')} Install as app</button>` : ''}<a class="btn" href="#desk">${ico('desk')} Open the desk</a></div></div><div id="dash"><div class="empty">Loading…</div></div>`);
   try {
     const [s, o] = await Promise.all([api('/staff/stats'), api('/staff/loans?mode=overdue')]);
     const days = []; for (let i = 6; i >= 0; i--) { const d = new Date(Date.now() - i * 86400000); const k = d.toISOString().slice(0, 10); days.push({ k, l: d.toLocaleDateString(undefined, { weekday: 'short' }), c: (s.loansPerDay.find((x) => x.d === k) || {}).c || 0 }); }
@@ -408,7 +409,10 @@ VIEWS.settings = async () => {
         <div class="dropzone" data-drop="catalog"><b>Books and copies</b><p class="hint" style="margin:.4rem 0 1rem">Columns: title, author, isbn, publisher, year, language, subjects, call_number, copies, location, description</p><input type="file" id="f-catalog" accept=".csv,text/csv" class="sr-only"><label for="f-catalog" class="btn soft small" style="cursor:pointer">${ico('plus')} Choose CSV</label> <button type="button" class="btn ghost small" data-act="template" data-v="catalog">Download template</button></div>
         <div class="dropzone" data-drop="patrons"><b>Students</b><p class="hint" style="margin:.4rem 0 1rem">Columns: name, card_number, username, email, department, class</p><input type="file" id="f-patrons" accept=".csv,text/csv" class="sr-only"><label for="f-patrons" class="btn soft small" style="cursor:pointer">${ico('plus')} Choose CSV</label> <button type="button" class="btn ghost small" data-act="template" data-v="patrons">Download template</button></div>
       </div><div id="importresult" style="margin-top:1rem"></div></div>
-    <div class="card"><h2>Export and backup</h2><div class="row"><a class="btn soft" href="/api/admin/export/catalog.csv" download>Catalogue (CSV)</a><a class="btn soft" href="/api/admin/export/backup.json" download>Full backup (JSON)</a></div><p class="hint" style="margin-top:.7rem">Backups leave out passwords and passkeys.</p></div>`.s;
+    <div class="card"><h2>Export and backup</h2><div class="row"><a class="btn soft" href="/api/admin/export/catalog.csv" download>Catalogue (CSV)</a><a class="btn soft" href="/api/admin/export/backup.json" download>Full backup (JSON)</a></div><p class="hint" style="margin-top:.7rem">Backups leave out passwords and passkeys.</p></div>
+    <div class="card"><h2>Desktop application</h2><p class="muted" style="margin-bottom:1rem">Run the library portal as a standalone desktop app with its own window, taskbar icon, and offline catalogue shell.</p>
+      <div class="row">${isStandalone() ? h`<span class="pill ok">✓ Installed as application</span>` : h`<button class="btn" type="button" data-act="install-app">${ico('install')} Install as desktop app</button>`}<a class="btn soft" href="#install">Installation guide</a></div>
+    </div>`.s;
     updateFinePreview();
   } catch (e) { $('#setbox').innerHTML = h`<div class="error">${e.message}</div>`.s; }
 };
@@ -442,7 +446,7 @@ function downloadBlob(name, text, type = 'text/csv') { const a = document.create
 /* ---------- admin: accounts + audit ---------- */
 VIEWS.users = async () => {
   const role = S.tmp.userRole || 'staff';
-  view(h`<div class="page-head"><div><h1>Accounts</h1><p>Create staff, reset passwords and switch accounts off.</p></div><div class="row"><div class="tabs">${[['staff', 'Staff'], ['student', 'Students']].map(([k, l]) => h`<button data-act="user-role" data-v="${k}" aria-selected="${role === k}">${l}</button>`)}</div><button class="btn" data-act="new-staff">${ico('plus')} Add staff</button></div></div><div class="card" id="userbox">Loading…</div>`);
+  view(h`<div class="page-head"><div><h1>Accounts</h1><p>Create staff, reset passwords and switch accounts off.</p></div><div class="row">${!isStandalone() ? h`<button class="btn soft" data-act="install-app">${ico('install')} Install app</button>` : ''}<div class="tabs">${[['staff', 'Staff'], ['student', 'Students']].map(([k, l]) => h`<button data-act="user-role" data-v="${k}" aria-selected="${role === k}">${l}</button>`)}</div><button class="btn" data-act="new-staff">${ico('plus')} Add staff</button></div></div><div class="card" id="userbox">Loading…</div>`);
   try {
     const { users } = await api('/admin/users' + (role === 'student' ? '?role=student' : ''));
     $('#userbox').innerHTML = (users.length ? h`<div class="table-wrap"><table><thead><tr><th>Name</th><th>Username</th><th>Role</th><th>Passkeys</th><th>Last sign-in</th><th></th></tr></thead><tbody>${users.map((u) => h`<tr><td class="cell-title"><b>${u.name}</b><span>${u.email || ''}</span></td><td>${u.username}</td><td><span class="pill">${u.role}</span> ${u.active ? '' : h`<span class="pill bad">off</span>`}</td><td class="num">${u.passkeys}</td><td class="small muted">${u.lastLogin ? fmtTime(u.lastLogin) : 'never'}</td>
@@ -466,6 +470,69 @@ VIEWS.security = async () => {
     <button class="btn" type="submit">Update password</button></form></div>`);
   loadPasskeys();
 };
+
+/* ---------- install app (all roles) ---------- */
+let deferredPrompt = null;
+window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); deferredPrompt = e; });
+window.addEventListener('appinstalled', () => { deferredPrompt = null; toast('App installed. Open it from your home screen or desktop.', 'ok'); if (location.hash === '#install') render(); });
+
+const isStandalone = () => window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+
+function installHelp() {
+  const ua = navigator.userAgent;
+  const isIOS = /iphone|ipad|ipod/i.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const isSafari = isIOS || (/Safari/.test(ua) && !/Chrome|Chromium|Edg|OPR|Android/i.test(ua));
+  if (isIOS) {
+    return h`<p class="muted">On iPhone or iPad, tap the <b>Share</b> button in Safari, then choose <b>Add to Home Screen</b>.</p>`;
+  }
+  if (isSafari) {
+    return h`<p class="muted">In Safari on Mac, choose <b>File → Add to Dock</b> to install the library as an app.</p>`;
+  }
+  if (/Android/i.test(ua)) {
+    return h`<p class="muted">In Chrome on Android, tap the <b>⋮</b> menu and choose <b>Install app</b> or <b>Add to Home screen</b>.</p>`;
+  }
+  return h`<p class="muted">In Chrome or Edge on desktop, click the <b>install</b> icon in the address bar, or open the <b>⋮</b> menu and choose <b>Cast, save, and share → Install page as app</b>. You can also use the button above.</p>`;
+}
+
+VIEWS.install = async () => {
+  const installed = isStandalone();
+  view(h`
+  <div class="page-head"><div><h1>Install the library</h1><p>Add the library to your device for quick access, like a native app.</p></div></div>
+  <div class="card stack" style="max-width:42rem">
+    ${installed ? h`<div class="desk-result"><b>Already installed</b><span>The library is running as an installed app on this device. Updates arrive automatically.</span></div>` : h`
+      <p class="muted">Installing gives the library its own window and icon. Your sign-in, books and settings stay in sync because it is the same secure portal — no extra download.</p>
+      ${deferredPrompt ? h`<div class="row"><button class="btn" data-act="install-app">${ico('install')} Install library</button></div>` : h`<div class="row"><button class="btn" data-act="install-help">${ico('install')} How to install</button></div>`}
+      <div class="card" style="background:var(--surface-2,#fff)"><h2 style="margin:0 0 .6rem">Install on your device</h2>${installHelp()}</div>
+      <ul class="muted small" style="margin:.4rem 0 0;padding-left:1.2rem">
+        <li>Opens in its own window with an icon on your home screen or desktop.</li>
+        <li>Loads the catalogue and your library page faster after the first visit.</li>
+        <li>Sign-in and passkeys keep working exactly as in the browser.</li>
+      </ul>`}
+    <p class="hint">The install option appears only where your browser supports it. On unsupported browsers, the steps above still let you add a shortcut.</p>
+  </div>`);
+};
+ACTIONS['install-app'] = async () => {
+  if (isStandalone()) {
+    toast('The library is already running as an installed application.', 'ok');
+    return;
+  }
+  if (deferredPrompt) {
+    try {
+      const e = deferredPrompt;
+      deferredPrompt = null;
+      e.prompt();
+      const choice = await e.userChoice;
+      if (choice && choice.outcome === 'accepted') {
+        toast('Installing library application…', 'ok');
+        return;
+      }
+    } catch {
+      // Fall through to guide
+    }
+  }
+  location.hash = '#install';
+};
+ACTIONS['install-help'] = () => { location.hash = '#install'; };
 async function loadPasskeys() {
   const box = $('#pkcard'); if (!box) return;
   const ok = window.SimpleWebAuthnBrowser && SimpleWebAuthnBrowser.browserSupportsWebAuthn();
